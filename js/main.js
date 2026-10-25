@@ -1,4 +1,4 @@
-import { initBackend, getBackendMode, getPlayerUid, createRoom, getRoom, mutateRoom, deleteRoom, subscribeRoom, subscribeConnection } from './backend.js';
+import { initBackend, getBackendMode, getPlayerUid, createRoom, getRoom, primeRoomForTransaction, mutateRoom, deleteRoom, subscribeRoom, subscribeConnection } from './backend.js';
 import { MAX_PLAYERS, MIN_PLAYERS } from './config.js';
 import { SKILLS, SKILL_IDS, DEFAULT_SETTINGS } from './skills.js';
 import {
@@ -224,7 +224,7 @@ async function joinLobby() {
   if (!/^\d{4}$/.test(code)) { toast('Raumcode prüfen', 'Bitte gib den vierstelligen Code ein.', 'warn'); return; }
   $('joinRoomBtn').disabled = true;
   try {
-    const room = await getRoom(code);
+    const room = await primeRoomForTransaction(code);
     if (!room || room.phase === 'closed') { toast('Raum nicht gefunden', 'Überprüfe den Code oder bitte den Host um eine neue Lobby.', 'danger'); return; }
     let failure = null;
     const updated = await mutateRoom(code, (current) => {
