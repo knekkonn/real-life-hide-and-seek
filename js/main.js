@@ -10,6 +10,7 @@ import { initMap, updateMap, centerMap, invalidateMapSize, resetMap } from './ma
 import { clamp, now, formatTime, escapeHTML, randomCode, distanceMeters, Sound, haptic, setSoundEnabled } from './utils.js';
 
 const $ = (id) => document.getElementById(id);
+const ACTIVE_ROOM_SESSION_KEY = 'hideseek-active-room-session';
 const state = {
   uid:null, playerName:'', roomCode:null, room:null, unsubscribe:null, connected:true,
   ownLocation:null, watchId:null, gpsPending:false, lastLocationWrite:0,
@@ -79,6 +80,44 @@ function isHost() { return state.room?.hostId === state.uid; }
 function canUseGame() { return ['hide','playing'].includes(state.room?.phase) && Boolean(getSelf()?.active); }
 function displayName(player) { return escapeHTML(player?.name || 'UNKNOWN'); }
 
+function persistActiveRoomSession() {
+  try {
+    if (state.roomCode && state.uid && state.playerName) {
+      sessionStorage.setItem(ACTIVE_ROOM_SESSION_KEY, JSON.stringify({ code:state.roomCode, uid:state.uid, name:state.playerName }));
+    }
+  } catch { /* Session restoration is optional when browser storage is unavailable. */ }
+}
+
+function clearActiveRoomSession() {
+  try { sessionStorage.removeItem(ACTIVE_ROOM_SESSION_KEY); } catch { /* Ignore unavailable browser storage. */ }
+}
+
+async function restoreActiveRoomSession() {
+  let saved;
+  try { saved = JSON.parse(sessionStorage.getItem(ACTIVE_ROOM_SESSION_KEY) || 'null'); }
+  catch { clearActiveRoomSession(); return; }
+  if (!saved || !/^\d{4}$/.test(saved.code || '') || saved.uid !== getPlayerUid()) {
+    clearActiveRoomSession();
+    return;
+  }
+  try {
+    const room = await getRoom(saved.code);
+    if (!room || !room.players?.[saved.uid]?.active || room.phase === 'closed') {
+      clearActiveRoomSession();
+      return;
+    }
+    state.playerName = saved.name || room.players[saved.uid].name || '';
+    state.uid = saved.uid;
+    state.roomCode = saved.code;
+    state.subscriptionStartedAt = now();
+    attachRoomListener();
+    showGameState();
+  } catch (error) {
+    // Keep the session so a transient network failure does not lose the lobby.
+    console.warn('Lobby session could not be restored.', error?.code || 'connection error');
+  }
+}
+
 async function startApp() {
   try { await initBackend(); }
   catch (error) { console.warn(error); toast('Firebase nicht verbunden', 'Die App läuft im lokalen Demo-Modus. Für echte Multiplayer-Synchronisation Firebase konfigurieren.', 'warn', 6500); }
@@ -132,6 +171,7 @@ async function startApp() {
   $('announcementsToggle').addEventListener('change', (event) => saveSettings({ announcements:event.target.checked }));
   $('seekerCount').addEventListener('change', (event) => saveSettings({ seekerCount:Number(event.target.value) }));
   document.querySelectorAll('.game-tab').forEach((button) => button.addEventListener('click', () => selectTab(button.dataset.tab)));
+  await restoreActiveRoomSession();
   window.addEventListener('keydown', (event) => { if (event.key === 'Escape' && state.modalCloseable && !$('modalRoot').classList.contains('hidden')) closeModal(); });
   subscribeConnection((connected) => { state.connected = connected; setConnectionBadge(); });
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
@@ -165,6 +205,7 @@ async function createLobby() {
     state.playerName = name;
     state.uid = uid;
     state.roomCode = code;
+    persistActiveRoomSession();
     state.subscriptionStartedAt = now();
     attachRoomListener();
     showGameState();
@@ -195,6 +236,7 @@ async function joinLobby() {
     state.playerName = name;
     state.uid = getPlayerUid();
     state.roomCode = code;
+    persistActiveRoomSession();
     state.subscriptionStartedAt = now();
     attachRoomListener();
     showGameState();
@@ -591,6 +633,7 @@ function confirmLeaveRoom() {
 }
 
 function localExit() {
+  clearActiveRoomSession();
   state.unsubscribe?.(); state.unsubscribe = null;
   if (state.watchId !== null && 'geolocation' in navigator) navigator.geolocation.clearWatch(state.watchId);
   state.watchId = null;
