@@ -85,6 +85,11 @@ export function activateSkillLabSkill(session,skillId,{x,y}={}) {
     const distance=seeker?pointDistance(session.self,seeker,session.radius):Infinity;
     if(distance>20) return {ok:false,reason:`Trainings-Seeker ist ${Math.round(distance)} m entfernt. Stelle ihn mit dem Distanzregler auf höchstens 20 m.`};
     session.effects.closecall={progressSince:timestamp,lastProofAt:timestamp,expiresAt:timestamp+90000,duration:tuning.duration*1000,radius:20};
+  } else if(skillId==='freeze') {
+    const seeker=session.actors.filter(actor=>actor.role==='seeker').sort((a,b)=>pointDistance(session.self,a,session.radius)-pointDistance(session.self,b,session.radius))[0];
+    const distance=seeker?pointDistance(session.self,seeker,session.radius):Infinity;
+    if(distance>tuning.freezeRadius) return {ok:false,reason:`Trainings-Seeker ist ${Math.round(distance)} m entfernt. Stelle ihn mit dem Distanzregler auf höchstens ${tuning.freezeRadius} m.`};
+    session.effects.seekerFrozenUntil=effect(tuning.duration); session.effects.frozenSeekerId=seeker.id;
   }
 
   session.inventory=session.inventory.filter(id=>id!==skillId);
@@ -96,6 +101,8 @@ export function activateSkillLabSkill(session,skillId,{x,y}={}) {
         ? `${tuning.short}: Falle mit ${tuning.trapRadius} m Wirkungsradius platziert.`
         : skillId==='closecall'
           ? `${tuning.short}: bleib ${tuning.duration} Sekunden innerhalb von 20 m und erhalte ${tacticalTuning({radius:session.radius}).closeCallReward} Punkte.`
+          : skillId==='freeze'
+            ? `${tuning.short}: Trainings-Seeker für ${tuning.duration} Sekunden eingefroren.`
         : skillId==='shield'
           ? `${tuning.short}: bereit, den nächsten Fangversuch abzuwehren.`
           : `${tuning.short}: aktiv für ${tuning.duration} Sekunden.`;
@@ -214,7 +221,7 @@ export function skillLabSnapshot(session,timestamp=Date.now()) {
     if(actor.role==='hider'&&session.role==='seeker') return (sonar&&session.effects.sonarTargets?.includes(actor.id)&&!fresh(session.effects.ghostUntil,timestamp))||(tracker&&session.effects.trackerTarget===actor.id)||(session.targetReady&&actor.id===session.actors.find(a=>a.role==='hider')?.id);
     if(actor.role==='seeker'&&session.role==='hider') return seekerRadar||(session.targetReady&&actor.id===session.actors.find(a=>a.role==='seeker')?.id);
     return actor.role===session.role;
-  }).map(actor=>({...actor,tracked:tracker&&session.effects.trackerTarget===actor.id}));
+  }).map(actor=>({...actor,tracked:tracker&&session.effects.trackerTarget===actor.id,frozen:session.effects.frozenSeekerId===actor.id&&fresh(session.effects.seekerFrozenUntil,timestamp)}));
   const effects=Object.entries(session.effects).filter(([key,value])=>key.endsWith('Until')&&fresh(value,timestamp)).map(([key,value])=>({key,remainingSeconds:Math.ceil((value-timestamp)/1000)}));
   if(session.effects.closecall) effects.push({key:'closecall',remainingSeconds:Math.max(0,Math.ceil((session.effects.closecall.duration-(timestamp-session.effects.closecall.progressSince))/1000))});
   return {actors,traps:session.traps.filter(t=>fresh(t.expiresAt,timestamp)),decoys:session.decoys.filter(d=>fresh(d.expiresAt,timestamp)),restrictedZones:[...session.restrictedZones],forcedHiders:[...session.forcedHiders],effects,jammed:jammer,inventory:[...session.inventory],placementPending:session.placementPending,caught:session.caught,score:Number(session.score)||0,timeExchangesUsed:session.timeExchangesUsed,matchSeconds:session.matchSeconds,log:[...session.log]};

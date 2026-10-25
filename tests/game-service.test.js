@@ -94,7 +94,7 @@ test('host can configure multiple randomized seekers and both roles receive a ra
   assert.equal(players.filter((player) => player.role === 'hider').length, 5);
   assert.ok(players.every((player) => player.inventory.length === 1));
   assert.ok(players.filter((player) => player.role === 'seeker').every((player) => ['sonar','tracker','jammer','sprint','sweeper','compass'].includes(player.inventory[0])));
-  assert.ok(players.filter((player) => player.role === 'hider').every((player) => ['ghost','decoy','trap','shield','seekerradar','silent','closecall'].includes(player.inventory[0])));
+  assert.ok(players.filter((player) => player.role === 'hider').every((player) => ['ghost','decoy','trap','shield','seekerradar','silent','closecall','freeze'].includes(player.inventory[0])));
 });
 
 test('role settings never allow starting without a hider', () => {

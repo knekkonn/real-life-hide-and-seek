@@ -46,7 +46,7 @@ export function publicRoom(source, uid, timestamp=Date.now()) {
       player.location = {lat:Math.round(player.location.lat*1000)/1000,lng:Math.round(player.location.lng*1000)/1000};
     }
     // Public score/role remain visible; private inventory, effects and zone evidence do not.
-    delete player.inventory; delete player.effects; delete player.zone; delete player.previousStatus; delete player.activeTask; delete player.taskCooldownUntil; delete player.forcedRelocation; delete player.tacticalCooldowns; delete player.timeExchangesUsed;
+    delete player.inventory; delete player.effects; delete player.zone; delete player.previousStatus; delete player.activeTask; delete player.taskCooldownUntil; delete player.forcedRelocation; delete player.zoneEvacuations; delete player.tacticalCooldowns; delete player.timeExchangesUsed;
     delete player._stayAnchor; delete player.stationarySince; delete player.rewardAt; delete player.hiderStartedAt;
     if (player.id === uid) { /* own task and cooldown remain private to the requesting player */ }
   }
@@ -114,7 +114,16 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
     return {room,result:true};
   }
   const player = member(room,uid);
-  if(room.phase==='playing') game.awardElapsedHiderPoints(room,Math.min(timestamp,Number(room.matchEndsAt)||timestamp));
+  if(room.phase==='playing') {
+    game.awardElapsedHiderPoints(room,Math.min(timestamp,Number(room.matchEndsAt)||timestamp));
+    // A location update can arrive just after its deadline even though its
+    // GPS sample was captured before it. Let deadline settlement consider
+    // that validated sample so a delayed network packet cannot wrongly
+    // eliminate a player who completed the move in time.
+    const locationProof=action==='updatePlayerLocation'&&validPoint(input.location)&&Number.isFinite(input.location.accuracy)&&input.location.accuracy>0&&input.location.accuracy<=25&&Number.isFinite(input.location.measuredAt)&&Math.abs(timestamp-input.location.measuredAt)<=10000?input.location:null;
+    settleTacticalDeadlines(room,timestamp,{playerId:uid,location:locationProof});
+    if(!player.active) return {room,result:false};
+  }
   if (room.phase === 'playing' && (player.effects?.frozenUntil || 0)>timestamp && !['updatePlayerLocation','leaveRoom'].includes(action)) throw new Error('FROZEN');
   if (room.phase === 'playing' && player.role==='hider' && player.forcedRelocation && !['updatePlayerLocation','leaveRoom'].includes(action)) throw new Error('RELOCATION_REQUIRED');
   if (room.phase === 'closed' && action !== 'leaveRoom') throw new Error('LOBBY_CLOSED');
@@ -151,7 +160,8 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
       if(room.phase==='playing' && player.role==='hider') {
         for(const zone of Object.values(room.restrictedZones||{})) {
           if(zone.expiresAt<=timestamp || distanceMeters(location,zone.center)>zone.radius) continue;
-          const mayRemainInside=(zone.allowedInside||[]).includes(uid)&&freshAccurate(player,timestamp)&&distanceMeters(player.location,zone.center)<=zone.radius;
+          const obligation=player.zoneEvacuations?.[zone.id];
+          const mayRemainInside=Boolean(obligation&&obligation.deadlineAt>timestamp&&freshAccurate(player,timestamp)&&distanceMeters(player.location,zone.center)<=zone.radius);
           if(!mayRemainInside) throw new Error('RESTRICTED_AREA');
         }
       }
@@ -176,8 +186,14 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
         else if (task.kind==='proximity' && hasNearbyHider(room,uid,location,timestamp,10)) task.arrivedAt=timestamp;
       }
       await game.updatePlayerLocation(context,uid,{...location,measuredAt:timestamp});
-      if(player.role==='hider') for(const zone of Object.values(room.restrictedZones||{})) if(distanceMeters(player.location,zone.center)>zone.radius) zone.allowedInside=(zone.allowedInside||[]).filter(id=>id!==uid);
-      if(player.forcedRelocation && distanceMeters(player.location,player.forcedRelocation.from)>=player.forcedRelocation.minimumMeters) {
+      if(player.role==='hider') {
+        player.zoneEvacuations ||= {};
+        for(const zone of Object.values(room.restrictedZones||{})) if(freshAccurate(player,timestamp)&&distanceMeters(player.location,zone.center)>zone.radius) {
+          zone.allowedInside=(zone.allowedInside||[]).filter(id=>id!==uid);
+          delete player.zoneEvacuations[zone.id];
+        }
+      }
+      if(player.forcedRelocation && freshAccurate(player,timestamp) && distanceMeters(player.location,player.forcedRelocation.from)>=player.forcedRelocation.minimumMeters) {
         player.forcedRelocation=null;
         room.announcement={id:crypto.randomUUID(),type:'private',targetId:uid,title:'RELOCATION_COMPLETE',message:'Mindestabstand erreicht. Du kannst wieder Fähigkeiten und Aufgaben einsetzen.',createdAt:timestamp};
       }
@@ -197,7 +213,7 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
     case 'buySkill': result=await game.buySkill(context,uid,input.skillId); break;
     case 'activateSkill': {
       if (input.skillId === 'decoy' && (!validPoint(input.params?.location) || distanceMeters(input.params.location,room.settings.center) > skillTuning('decoy',room.settings).decoyRange)) throw new Error('INVALID_POINT');
-      if (['tracker','compass','trap','sweeper','closecall'].includes(input.skillId) && !freshAccurate(player,timestamp)) throw new Error('FRESH_GPS_REQUIRED');
+      if (['tracker','compass','trap','sweeper','closecall','freeze'].includes(input.skillId) && !freshAccurate(player,timestamp)) throw new Error('FRESH_GPS_REQUIRED');
       if(input.skillId==='closecall') {
         if(player.role!=='hider' || room.phase!=='playing') throw new Error('ABILITY_UNAVAILABLE');
         if(player.effects?.closecall) throw new Error('ABILITY_COOLDOWN');
@@ -209,6 +225,16 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
         player.effects.closecall={startedAt:timestamp,progressSince:timestamp,lastProofAt:timestamp,expiresAt:timestamp+90000,duration:closeCallDuration,radius:20};
         player.skillsUsed=(Number(player.skillsUsed)||0)+1;
         room.announcement={id:crypto.randomUUID(),type:'private',targetId:uid,title:'CLOSE_CALL_STARTED',message:`Bleib ${Math.round(closeCallDuration/1000)} Sekunden innerhalb von 20 m eines Seekers. Frische GPS-Messungen prüfen deinen Fortschritt.`,createdAt:timestamp};
+        result=true;
+      } else if(input.skillId==='freeze') {
+        if(player.role!=='hider'||room.phase!=='playing'||!(player.inventory||[]).includes('freeze')) throw new Error('SKILL_UNAVAILABLE');
+        const tuning=skillTuning('freeze',room.settings);
+        const target=Object.values(room.players||{}).filter(candidate=>candidate.active&&candidate.role==='seeker'&&freshAccurate(candidate,timestamp)&&distanceMeters(player.location,candidate.location)<=tuning.freezeRadius).sort((a,b)=>distanceMeters(player.location,a.location)-distanceMeters(player.location,b.location))[0];
+        if(!target) throw new Error('SEEKER_NOT_NEARBY');
+        player.inventory.splice(player.inventory.indexOf('freeze'),1); player.skillsUsed=(Number(player.skillsUsed)||0)+1;
+        target.effects ||= {}; target.effects.frozenUntil=Math.max(Number(target.effects.frozenUntil)||0,timestamp+tuning.duration*1000); target.effects.freezeSource='hider';
+        room.announcement={id:crypto.randomUUID(),type:'private',targetId:uid,title:'FROST_IMPULSE',message:`Seeker für ${tuning.duration} Sekunden eingefroren.`,createdAt:timestamp};
+        room.announcementForSeeker={id:crypto.randomUUID(),targetId:target.id,title:'FROZEN',message:`Ein Hider hat dich für ${tuning.duration} Sekunden eingefroren.`,createdAt:timestamp};
         result=true;
       } else result=await game.activateSkill(context,uid,input.skillId,input.params || {});
       for (const candidate of Object.values(room.players)) if (candidate.id !== uid && timestamp-(candidate.locationAt || 0)>10000) candidate.location=null;
@@ -324,6 +350,7 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
 
 export async function settlePhases(room, fetchImpl=fetch) {
   const context = {room};
+  settleTacticalDeadlines(room,Date.now());
   game.awardElapsedHiderPoints(room,Math.min(Date.now(),Number(room.matchEndsAt)||Date.now()));
   for (let i=0;i<5;i++) {
     if (!context.room.phaseEndsAt || context.room.phaseEndsAt>Date.now()) break;
@@ -370,6 +397,41 @@ function hasNearbyHider(room,seekerId,location,timestamp,radius) {
 function nearbyFreshSeeker(room,hider,timestamp,radius) {
   return Object.values(room.players||{}).some(candidate=>candidate.active&&candidate.role==='seeker'&&freshAccurate(candidate,timestamp)&&distanceMeters(hider.location,candidate.location)<=radius);
 }
+function settleTacticalDeadlines(room,timestamp,locationProof=null) {
+  if(room.phase!=='playing') return false;
+  let changed=false;
+  room.restrictedZones ||= {};
+  for(const player of Object.values(room.players||{})) {
+    if(!player.active||player.role!=='hider') continue;
+    const relocationDeadline=player.forcedRelocation&&(Number(player.forcedRelocation.deadlineAt)||Number(player.forcedRelocation.createdAt)+tacticalTuning(room.settings).relocationDeadlineSeconds*1000);
+    if(relocationDeadline&&relocationDeadline<=timestamp) {
+      const proof=locationProof?.playerId===player.id?locationProof.location:null;
+      const completedInTime=proof&&proof.measuredAt<=relocationDeadline&&distanceMeters(proof,player.forcedRelocation.from)>=player.forcedRelocation.minimumMeters;
+      if(!completedInTime) {
+      if(game.applyForcedElimination(room,player.forcedRelocation.requiredBy,player.id,timestamp,'relocation')) changed=true;
+      if(room.phase==='finished') return changed;
+      }
+    }
+    for(const [zoneId,obligation] of Object.entries(player.zoneEvacuations||{})) {
+      const zone=room.restrictedZones[zoneId];
+      if(!zone) { delete player.zoneEvacuations[zoneId]; changed=true; continue; }
+      const proof=locationProof?.playerId===player.id?locationProof.location:null;
+      const provedOutsideInTime=proof&&proof.measuredAt<=obligation.deadlineAt&&distanceMeters(proof,zone.center)>zone.radius;
+      if(obligation.deadlineAt<=timestamp&&provedOutsideInTime) continue; // updatePlayerLocation clears it after accepting the same proof.
+      const lastKnownInside=!validPoint(player.location)||distanceMeters(player.location,zone.center)<=zone.radius;
+      if(obligation.deadlineAt<=timestamp&&lastKnownInside) {
+        if(game.applyForcedElimination(room,obligation.requiredBy,player.id,timestamp,'zone')) changed=true;
+        if(room.phase==='finished') return changed;
+        break;
+      }
+      if(obligation.deadlineAt<=timestamp||zone.expiresAt<=timestamp) {
+        delete player.zoneEvacuations[zoneId]; zone.allowedInside=(zone.allowedInside||[]).filter(id=>id!==player.id); changed=true;
+      }
+    }
+  }
+  for(const [id,zone] of Object.entries(room.restrictedZones)) if(zone.expiresAt<=timestamp) { delete room.restrictedZones[id]; changed=true; }
+  return changed;
+}
 function useTacticalAbility(room,player,input,timestamp) {
   if(room.phase!=='playing' || player.role!=='seeker' || !player.active) throw new Error('ABILITY_UNAVAILABLE');
   const tuning=tacticalTuning(room.settings);
@@ -378,18 +440,27 @@ function useTacticalAbility(room,player,input,timestamp) {
   if(ability==='zone') {
     if(!freshAccurate(player,timestamp)) throw new Error('FRESH_GPS_REQUIRED');
     if((cooldowns.zone||0)>timestamp) throw new Error('ABILITY_COOLDOWN');
+    const zoneRadius=Number(input.radius??tuning.zoneRadius),zoneDuration=Number(input.duration??tuning.zoneDuration);
+    if(!Number.isInteger(zoneRadius)||zoneRadius<10||zoneRadius>tuning.maxZoneRadius||!Number.isInteger(zoneDuration)||zoneDuration<60||zoneDuration>180) throw new Error('INVALID_ZONE_SETTINGS');
+    const zoneCost=tuning.zoneCostFor(zoneRadius,zoneDuration);
     const center=input.center;
-    if(!validPoint(center) || !validPoint(room.settings.center) || distanceMeters(center,room.settings.center)>tuning.radius-tuning.zoneRadius) throw new Error('INVALID_POINT');
+    if(!validPoint(center) || !validPoint(room.settings.center) || distanceMeters(center,room.settings.center)>tuning.radius-zoneRadius) throw new Error('INVALID_POINT');
     room.restrictedZones=Object.fromEntries(Object.entries(room.restrictedZones||{}).filter(([,zone])=>zone.expiresAt>timestamp));
     if(Object.keys(room.restrictedZones).length>=3) throw new Error('ZONE_LIMIT');
-    if((Number(player.score)||0)<tuning.zoneCost) throw new Error('POINTS_REQUIRED');
-    player.score-=tuning.zoneCost;
+    if((Number(player.score)||0)<zoneCost) throw new Error('POINTS_REQUIRED');
+    player.score-=zoneCost;
     const id=crypto.randomUUID();
-    const allowedInside=Object.values(room.players||{}).filter(candidate=>candidate.active&&candidate.role==='hider'&&freshAccurate(candidate,timestamp)&&distanceMeters(candidate.location,center)<=tuning.zoneRadius).map(candidate=>candidate.id);
-    room.restrictedZones[id]={id,center:{lat:center.lat,lng:center.lng},radius:tuning.zoneRadius,createdAt:timestamp,expiresAt:timestamp+tuning.zoneDuration*1000,ownerId:player.id,allowedInside};
-    cooldowns.zone=timestamp+tuning.zoneDuration*1000;
+    const expiresAt=timestamp+zoneDuration*1000,deadlineAt=Math.min(timestamp+tuning.zoneEvacuationSeconds*1000,expiresAt-1000);
+    // Use the last server-accepted position to notify anyone already in the
+    // circle. If it is stale, a fresh location can clear the obligation by
+    // proving they are already outside.
+    const inside=Object.values(room.players||{}).filter(candidate=>candidate.active&&candidate.role==='hider'&&validPoint(candidate.location)&&distanceMeters(candidate.location,center)<=zoneRadius);
+    const allowedInside=inside.map(candidate=>candidate.id);
+    room.restrictedZones[id]={id,center:{lat:center.lat,lng:center.lng},radius:zoneRadius,createdAt:timestamp,expiresAt,ownerId:player.id,allowedInside};
+    for(const target of inside) { target.zoneEvacuations ||= {}; target.zoneEvacuations[id]={zoneId:id,deadlineAt,requiredBy:player.id}; }
+    cooldowns.zone=expiresAt;
     player.skillsUsed=(Number(player.skillsUsed)||0)+1;
-    room.announcement={id:crypto.randomUUID(),type:'global',title:'MAP_ZONE_LOCKED',message:`Sperrzone aktiv: Hider können ${tuning.zoneDuration} Sekunden lang nicht in den markierten Kreis laufen.`,createdAt:timestamp};
+    room.announcement={id:crypto.randomUUID(),type:'global',title:'MAP_ZONE_LOCKED',message:`Sperrzone: Radius ${zoneRadius} m · ${zoneDuration} Sekunden. Wer beim Aktivieren im Kreis steht, muss ihn innerhalb von ${Math.ceil((deadlineAt-timestamp)/1000)} Sekunden verlassen.`,createdAt:timestamp};
     return true;
   }
   if(ability==='relocate') {
@@ -413,10 +484,10 @@ function useTacticalAbility(room,player,input,timestamp) {
     const cost=tuning.relocationCost(input.mode,targets.length);
     if((Number(player.score)||0)<cost) throw new Error('POINTS_REQUIRED');
     player.score-=cost;
-    for(const target of targets) target.forcedRelocation={id:crypto.randomUUID(),from:{lat:target.location.lat,lng:target.location.lng},minimumMeters:tuning.relocateDistance,createdAt:timestamp,requiredBy:player.id};
+    for(const target of targets) target.forcedRelocation={id:crypto.randomUUID(),from:{lat:target.location.lat,lng:target.location.lng},minimumMeters:tuning.relocateDistance,createdAt:timestamp,deadlineAt:timestamp+tuning.relocationDeadlineSeconds*1000,requiredBy:player.id};
     cooldowns.relocate=timestamp+90000;
     player.skillsUsed=(Number(player.skillsUsed)||0)+1;
-    room.announcement={id:crypto.randomUUID(),type:'global',title:'FORCED_RELOCATION',message:`${targets.length===1?'Ein Hider muss':'Alle ausgewählten Hider müssen'} sich mindestens ${tuning.relocateDistance} m vom bisherigen Standort entfernen. Wählt sichere, öffentliche Wege.`,createdAt:timestamp};
+    room.announcement={id:crypto.randomUUID(),type:'global',title:'FORCED_RELOCATION',message:`${targets.length===1?'Ein Hider muss':'Alle ausgewählten Hider müssen'} sich mindestens ${tuning.relocateDistance} m entfernen. Frist: ${Math.ceil(tuning.relocationDeadlineSeconds/60)} Minuten. Betroffene sehen den Timer und Fortschritt auf ihrer Karte.`,createdAt:timestamp};
     return true;
   }
   if(ability==='exchangeTime') {

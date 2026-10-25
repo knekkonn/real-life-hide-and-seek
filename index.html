@@ -109,6 +109,7 @@
                 <label class="toggle-line"><span><b>Seeker-Radar</b><small>Hider: Seeker 10 Sekunden lokalisieren</small></span><input type="checkbox" data-skill="seekerradar" checked><i></i></label>
                 <label class="toggle-line"><span><b>Leise Sohlen</b><small>Hider: keine Nähewarnungen für 2 Minuten</small></span><input type="checkbox" data-skill="silent" checked><i></i></label>
                 <label class="toggle-line"><span><b>Mutprobe</b><small>Hider: 20 Sekunden innerhalb von 20 m eines Seekers bleiben und Punkte verdienen</small></span><input type="checkbox" data-skill="closecall" checked><i></i></label>
+                <label class="toggle-line"><span><b>Frostimpuls</b><small>Hider: einen nahen Seeker kurz einfrieren</small></span><input type="checkbox" data-skill="freeze" checked><i></i></label>
               </div>
               <div class="settings-divider"></div>
               <label class="toggle-line announcement-toggle"><span><b>Gefangen-Meldungen</b><small>Banner und Alarm-Sound für alle Spieler</small></span><input id="announcementsToggle" type="checkbox" checked><i></i></label>
@@ -143,7 +144,7 @@
               <div class="map-legend"><span><i class="legend-dot self-dot"></i> Du</span><span><i class="legend-dot seeker-dot"></i> Seeker</span><span><i class="legend-dot hider-dot"></i> Hider (Ping)</span><span><i class="legend-square"></i> Itembox</span><span><i class="legend-dot restricted-dot"></i> Sperrzone</span></div>
               <div id="roundPhotoGallery" class="round-photo-gallery hidden" aria-live="polite"></div>
               <div id="mapNotice" class="map-notice"><span>◎</span><div><strong>GPS noch nicht aktiv</strong><small>Standort freigeben, um deine Position auf der Karte anzuzeigen.</small></div><button id="mapGpsBtn" type="button">Aktivieren</button></div>
-              <div id="relocationNotice" class="relocation-notice hidden" role="status"></div><div id="proximityNotice" class="relocation-notice proximity-notice hidden" role="status"></div>
+              <div id="relocationNotice" class="relocation-notice hidden" role="status" aria-live="polite"></div><div id="zoneEvacuationNotice" class="relocation-notice zone-evacuation-notice hidden" role="status" aria-live="polite"></div><div id="proximityNotice" class="relocation-notice proximity-notice hidden" role="status"></div>
             </div>
             <div class="game-tabs" role="tablist" aria-label="Spielbereiche">
               <button class="game-tab active" type="button" data-tab="mapTab" role="tab" aria-controls="mapTab" aria-selected="true"><span>⌖</span> Karte</button>

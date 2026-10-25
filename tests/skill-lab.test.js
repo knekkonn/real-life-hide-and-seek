@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createSkillLabSession, setSkillLabRadius, queueSkillLabPlacement, activateSkillLabSkill, activateSkillLabTactical, moveSkillLabTarget, attemptSkillLabCatch, skillLabSnapshot } from '../js/skill-lab.js';
-import { tacticalTuning } from '../js/skills.js';
+import { skillTuning, tacticalTuning } from '../js/skills.js';
 
 test('practice sessions grant only the selected role skills and reset inventory locally', () => {
   const seeker=createSkillLabSession('seeker',500);
@@ -74,6 +74,18 @@ test('practice Hider Mutprobe requires proximity and awards the same scaled poin
   for(let elapsed=5000;elapsed<=20_000;elapsed+=5000) snapshot=skillLabSnapshot(hider,timestamp+elapsed);
   assert.equal(snapshot.score,120+tacticalTuning({radius:500}).closeCallReward);
   assert.equal(hider.effects.closecall,undefined);
+});
+
+test('practice Hider Frostimpuls freezes a nearby Seeker and shows the freeze on the test map', () => {
+  const hider=createSkillLabSession('hider',500),tuning=skillTuning('freeze',{radius:500});
+  moveSkillLabTarget(hider,20);
+  const result=activateSkillLabSkill(hider,'freeze');
+  assert.equal(result.ok,true);
+  const seeker=skillLabSnapshot(hider).actors.find(actor=>actor.role==='seeker');
+  assert.equal(seeker.frozen,true);
+  assert.ok(!hider.inventory.includes('freeze'));
+  assert.ok(seeker);
+  assert.ok(tuning.freezeRadius>=12);
 });
 
 test('practice Seeker strategic powers spend points and use scaled values', () => {

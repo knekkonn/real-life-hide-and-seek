@@ -97,11 +97,16 @@ export default {
           publicRoom(room,uid); // Authorize before doing any maintenance.
           const prior=JSON.stringify(room);
           room=await settlePhases(room);
-          if (JSON.stringify(room)!==prior) {
+          const changed=JSON.stringify(room)!==prior;
+          if (changed) {
             const saved=await env.DB.prepare('UPDATE rooms SET state=?,revision=revision+1 WHERE code=? AND revision=?').bind(JSON.stringify(room),code,row.revision).run();
             if (!saved.meta.changes) continue;
           }
-          return reply({room:publicRoom(room,uid)});
+          const revision=Number(row.revision)+(changed?1:0);
+          const sinceText=new URL(request.url).searchParams.get('since');
+          const since=sinceText===null?null:Number(sinceText);
+          if(Number.isSafeInteger(since)&&since===revision) return reply({unchanged:true,revision});
+          return reply({room:publicRoom(room,uid),revision});
         }
         const {room:next,result}=await applyAction(room,uid,input);
         if (!next) return reply({error:'ACTION_REJECTED'},409);
@@ -115,7 +120,7 @@ export default {
       return reply({error:'CONCURRENT_UPDATE_RETRY'},409);
     } catch (error) {
       const message=error?.message || 'BACKEND_ERROR';
-      const known=/^(UNAUTHENTICATED|ACCOUNT_REQUIRED|TEST_MODE_DENIED|TEST_MODE_DISABLED|PROFILE_INVALID|PAYLOAD_TOO_LARGE|INVALID_JSON|NOT_MEMBER|HOST_ONLY|LOBBY_CLOSED|ROOM_FULL|NAME_IN_USE|INVALID_NAME|CENTER_REQUIRED|INVALID_GPS|STALE_CATCH|CATCH_RANGE_REQUIRED|TARGET_NOT_CATCHABLE|FRESH_GPS_REQUIRED|INVALID_POINT|TASK_UNAVAILABLE|TASK_COOLDOWN|TASK_ALREADY_ACTIVE|TASK_EXPIRED|TASK_HIDER_NOT_NEARBY|NO_OBJECTIVES|INVALID_PHOTO|PHOTO_ALREADY_SUBMITTED|INVALID_CHALLENGE|WRONG_ANSWER|TASK_TOO_FAST|UNKNOWN_ACTION|RATE_LIMIT|FROZEN|RELOCATION_REQUIRED|RESTRICTED_AREA|POINTS_REQUIRED|ABILITY_COOLDOWN|ABILITY_UNAVAILABLE|SEEKER_NOT_NEARBY|SKILL_UNAVAILABLE|NO_ACTIVE_HIDERS|RELOCATION_PENDING|ZONE_LIMIT|EXCHANGE_LIMIT|MINIMUM_GAME_TIME|INVALID_ABILITY)$/.test(message);
+      const known=/^(UNAUTHENTICATED|ACCOUNT_REQUIRED|TEST_MODE_DENIED|TEST_MODE_DISABLED|PROFILE_INVALID|PAYLOAD_TOO_LARGE|INVALID_JSON|NOT_MEMBER|HOST_ONLY|LOBBY_CLOSED|ROOM_FULL|NAME_IN_USE|INVALID_NAME|CENTER_REQUIRED|INVALID_GPS|STALE_CATCH|CATCH_RANGE_REQUIRED|TARGET_NOT_CATCHABLE|FRESH_GPS_REQUIRED|INVALID_POINT|INVALID_ZONE_SETTINGS|TASK_UNAVAILABLE|TASK_COOLDOWN|TASK_ALREADY_ACTIVE|TASK_EXPIRED|TASK_HIDER_NOT_NEARBY|NO_OBJECTIVES|INVALID_PHOTO|PHOTO_ALREADY_SUBMITTED|INVALID_CHALLENGE|WRONG_ANSWER|TASK_TOO_FAST|UNKNOWN_ACTION|RATE_LIMIT|FROZEN|RELOCATION_REQUIRED|RESTRICTED_AREA|POINTS_REQUIRED|ABILITY_COOLDOWN|ABILITY_UNAVAILABLE|SEEKER_NOT_NEARBY|SKILL_UNAVAILABLE|NO_ACTIVE_HIDERS|RELOCATION_PENDING|ZONE_LIMIT|EXCHANGE_LIMIT|MINIMUM_GAME_TIME|INVALID_ABILITY)$/.test(message);
       const status=message==='UNAUTHENTICATED'||message==='ACCOUNT_REQUIRED'?401:message==='TEST_MODE_DENIED'||message==='NOT_MEMBER'||message==='HOST_ONLY'?403:message==='RATE_LIMIT'?429:message==='PAYLOAD_TOO_LARGE'?413:message==='PROFILE_INVALID'?400:known?409:500;
       return reply({error:known?message:'BACKEND_ERROR'},status);
     }

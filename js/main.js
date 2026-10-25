@@ -16,7 +16,7 @@ import { clamp, now, formatTime, escapeHTML, randomCode, distanceMeters, Sound, 
 const $ = (id) => document.getElementById(id);
 const state = {
   uid:null, playerName:'', roomCode:null, room:null, profile:null, testModeExpiresAt:0, skillLabSession:null, skillLabTimer:null, unsubscribe:null, connected:true,
-  ownLocation:null, watchId:null, gpsPending:false, gpsSyncStatus:'idle', lastLocationWrite:0,
+  ownLocation:null, watchId:null, gpsPending:false, gpsAuthorized:false, gpsWatchCallbacks:null, gpsSyncStatus:'idle', lastLocationWrite:0,
   lastAnnouncementId:null, lastSeekerSideAnnouncementId:null, subscriptionStartedAt:0, seenCatchRequest:null,
   revealDismissedPhase:null, lastCountdownSecond:null, currentTab:'mapTab', lastCelebratedRoundId:null, lastTracksRoundId:null,
   audioOn:true, tickHandle:null, passiveRewardAt:0, shakeHandler:null, shakeTimer:null,
@@ -24,7 +24,7 @@ const state = {
   roundPhotoUrls:new Map(), roundPhotoLoads:new Set(), roundPhotoFailures:new Map()
 };
 
-const SKILL_ICONS = { sonar:'◉',tracker:'⌖',jammer:'ϟ',sprint:'⚡',sweeper:'⌁',compass:'➤',ghost:'✧',decoy:'◈',trap:'⌗',shield:'⬡',seekerradar:'◎',silent:'♧',closecall:'⚑' };
+const SKILL_ICONS = { sonar:'◉',tracker:'⌖',jammer:'ϟ',sprint:'⚡',sweeper:'⌁',compass:'➤',ghost:'✧',decoy:'◈',trap:'⌗',shield:'⬡',seekerradar:'◎',silent:'♧',closecall:'⚑',freeze:'❄' };
 const PHASE_LABELS = { lobby:'LOBBY READY',countdown:'SYNC COUNTDOWN',reveal:'IDENTITY REVEAL',hide:'HIDE PHASE',playing:'LIVE MATCH',finished:'MISSION COMPLETE',closed:'ROOM CLOSED' };
 
 function setConnectionBadge() {
@@ -164,7 +164,7 @@ function renderSkillLab() {
   });
   $('skillLabSkillCount').textContent=`${snapshot.inventory.length} bereit · ${snapshot.score} P`;
   const actors=[session.self,...snapshot.actors];
-  const marker=(actor)=>`<div class="skill-lab-marker ${actor.id==='self'?'self':actor.role}${actor.tracked?' is-tracked':''}${actor.id==='self'&&session.effects.shield?' is-shielded':''}${actor.id==='self'&&session.effects.ghostUntil>now()?' is-ghosted':''}${actor.id==='self'&&session.effects.silentUntil>now()?' is-silent':''}" style="left:${actor.x}%;top:${actor.y}%" aria-label="${escapeHTML(actor.label)}"><span>${actor.id==='self'?'DU':actor.role==='seeker'?'S':'H'}</span><small>${escapeHTML(actor.label)}</small></div>`;
+  const marker=(actor)=>`<div class="skill-lab-marker ${actor.id==='self'?'self':actor.role}${actor.tracked?' is-tracked':''}${actor.frozen?' is-frozen':''}${actor.id==='self'&&session.effects.shield?' is-shielded':''}${actor.id==='self'&&session.effects.ghostUntil>now()?' is-ghosted':''}${actor.id==='self'&&session.effects.silentUntil>now()?' is-silent':''}" style="left:${actor.x}%;top:${actor.y}%" aria-label="${escapeHTML(actor.label)}"><span>${actor.id==='self'?'DU':actor.role==='seeker'?'S':'H'}</span><small>${escapeHTML(actor.label)}</small></div>`;
   const trapMarkers=snapshot.traps.map(trap=>`<div class="skill-lab-marker trap" style="left:${trap.x}%;top:${trap.y}%" aria-label="Trainingsfalle"><span>⌗</span><small>Falle</small></div>`).join('');
   const decoyMarkers=snapshot.decoys.map(decoy=>`<div class="skill-lab-marker decoy" style="left:${decoy.x}%;top:${decoy.y}%" aria-label="Täusch-Ping"><span>◈</span><small>Falsches Signal</small></div>`).join('');
   const restrictedMarkers=(snapshot.restrictedZones||[]).map(zone=>`<div class="skill-lab-restriction" style="left:${zone.x-zone.diameter/2}%;top:${zone.y-zone.diameter/2}%;width:${zone.diameter}%;height:${zone.diameter}%" aria-label="Trainings-Sperrzone"></div>`).join('');
@@ -174,7 +174,7 @@ function renderSkillLab() {
   $('skillLabCenterDecoyBtn').classList.toggle('hidden',!snapshot.placementPending);
   $('skillLabMap').innerHTML=`<div class="skill-lab-grid"></div><div class="skill-lab-zone" aria-hidden="true"></div><div class="skill-lab-center" aria-hidden="true">◎</div>${restrictedMarkers}${actors.map(marker).join('')}${trapMarkers}${decoyMarkers}${snapshot.jammed?'<div class="skill-lab-feedback">RADAR STATIC</div>':''}${session.effects.sprintUntil>now()?'<div class="skill-lab-feedback sprint">SPRINT ALARM · BEWEGUNG ERKANNT</div>':''}${snapshot.caught?'<div class="skill-lab-result">TRAININGSFANG</div>':''}${snapshot.placementPending?'<div class="skill-lab-place-prompt">Tippe in den Spielkreis<br><small>Zum Platzieren des Täusch-Pings</small></div>':''}`;
   const active=snapshot.effects.map(effect=>{
-    const names={sonarUntil:'Sonar',trackerUntil:'Tracker',compassUntil:'Kompass',jammerUntil:'Jammer',sprintUntil:'Sprint-Alarm',ghostUntil:'Geist-Modus',seekerradarUntil:'Seeker-Radar',silentUntil:'Leise Sohlen',closecall:'Mutprobe'};
+    const names={sonarUntil:'Sonar',trackerUntil:'Tracker',compassUntil:'Kompass',jammerUntil:'Jammer',sprintUntil:'Sprint-Alarm',ghostUntil:'Geist-Modus',seekerradarUntil:'Seeker-Radar',silentUntil:'Leise Sohlen',closecall:'Mutprobe',seekerFrozenUntil:'Seeker eingefroren'};
     return `${names[effect.key]||'Effekt'} · ${effect.remainingSeconds}s`;
   });
   if(session.effects.shield) active.push('Schild bereit');
@@ -453,7 +453,7 @@ async function startApp() {
       .catch((error) => console.warn('Service worker registration failed', error));
   }
   await restoreSession();
-  state.tickHandle = window.setInterval(tick, 500);
+  state.tickHandle = window.setInterval(tick, 1000);
 }
 
 function bindConnection() {
@@ -781,7 +781,7 @@ function renderGame() {
   const activeSkill = inventory[0] ? SKILLS[inventory[0]] : null;
   $('activeSkillName').textContent = activeSkill?.short || (self.effects?.shield ? 'Schild aktiv' : 'Kein Skill bereit');
   $('activeSkillIcon').textContent = activeSkill ? (SKILL_ICONS[activeSkill.id] || activeSkill.icon) : '◇';
-  $('activateSkillBtn').disabled = !canUseGame() || (!inventory.length && !self.effects?.shield);
+  $('activateSkillBtn').disabled = !canUseGame() || (self.effects?.frozenUntil||0)>now() || (!inventory.length && !self.effects?.shield);
   $('activateSkillBtn').textContent = inventory.length ? 'Fähigkeit einsetzen ↗' : 'Keine Fähigkeit bereit';
   $('activateSkillBtn').innerHTML = `${inventory.length ? 'Fähigkeit einsetzen' : 'Keine Fähigkeit bereit'} <span>↗</span>`;
   $('matchTimer').textContent = timerText();
@@ -794,13 +794,16 @@ function renderGame() {
   const empFrozen = (self.effects?.frozenUntil || 0) > now() && phase === 'playing';
   $('hideFreeze').classList.toggle('hidden', !seekerLock && !empFrozen);
   if (empFrozen) {
-    $('hideFreeze').querySelector('h2').innerHTML = 'EMP <br><span class="text-neon">LOCKDOWN.</span>';
-    $('hideFreeze').querySelector('p').textContent = 'Eine digitale Falle hat dein Signal blockiert. Bewege dich nicht in Gefahr und warte auf die Freigabe.';
+    const hiderFreeze=self.effects?.freezeSource==='hider';
+    $('hideFreeze').querySelector('h2').innerHTML = hiderFreeze ? 'FROST <br><span class="text-neon">LOCKDOWN.</span>' : 'EMP <br><span class="text-neon">LOCKDOWN.</span>';
+    $('hideFreeze').querySelector('p').textContent = hiderFreeze ? 'Ein Hider hat dich kurz eingefroren. Die Spielaktionen werden gleich wieder freigegeben.' : 'Eine digitale Falle hat dein Signal blockiert. Bewege dich nicht in Gefahr und warte auf die Freigabe.';
+    $('hideFreeze').querySelector('.freeze-icon').textContent = hiderFreeze ? '❄' : '⌁';
     $('freezeTimer').textContent = formatTime(Math.ceil((self.effects.frozenUntil - now()) / 1000));
     $('hideFreeze').querySelector('.freeze-sub').textContent = 'SIGNAL RESTORE IN PROGRESS';
   } else {
     $('hideFreeze').querySelector('h2').innerHTML = 'Bleib auf<br><span class="text-neon">Position.</span>';
     $('hideFreeze').querySelector('p').textContent = 'Die Hider bekommen einen Vorsprung. Deine Karte bleibt gesperrt, bis die Zeit abgelaufen ist.';
+    $('hideFreeze').querySelector('.freeze-icon').textContent = '⌁';
     $('hideFreeze').querySelector('.freeze-sub').textContent = 'SUCHPHASE WIRD VORBEREITET';
   }
   const shouldReveal = phase === 'reveal' && state.revealDismissedPhase !== phase;
@@ -830,6 +833,8 @@ function renderGame() {
   renderNearbyItems();
   renderLeaderboard();
   if (room.phase !== 'lobby') updateMap(room, state.uid, state.ownLocation || self.location, role,state.gpsSyncStatus);
+  if(['hide','playing'].includes(phase)&&state.gpsAuthorized) startGPSWatch();
+  else if(state.watchId!==null&&phase!=='hide'&&phase!=='playing') { navigator.geolocation.clearWatch(state.watchId); state.watchId=null; }
 }
 
 function timerSeconds() {
@@ -858,7 +863,7 @@ function renderQuickActions() {
   const self = getSelf();
   const role = self?.role;
   const phase = state.room.phase;
-  const canAct = canUseGame() && !(role === 'seeker' && phase === 'hide');
+  const canAct = canUseGame() && !(role === 'seeker' && phase === 'hide') && (self?.effects?.frozenUntil||0)<=now();
   const inventory = self?.inventory || [];
   const actions = [];
   if (role === 'seeker') {
@@ -867,7 +872,7 @@ function renderQuickActions() {
     actions.push({icon:'➤',title:'Kompass',detail:'Entferntesten Hider peilen',action:()=>useSkillFromInventory('compass'),disabled:!canAct || !inventory.includes('compass')});
     const tuning=tacticalTuning(state.room.settings);
     const workerReady=getBackendMode()==='worker';
-    actions.push({icon:'⊘',title:'Sperrzone',detail:`Karte markieren · ${tuning.zoneCost} P · Ø ${tuning.zoneRadius*2} m`,action:startRestrictedZonePlacement,disabled:!canAct||!workerReady||Number(self.score||0)<tuning.zoneCost||(self.tacticalCooldowns?.zone||0)>now()});
+    actions.push({icon:'⊘',title:'Sperrzone',detail:`Einstellbar · ab ${tuning.zoneCostFor(10,60)} P · Ø ${tuning.zoneRadius*2} m`,action:startRestrictedZonePlacement,disabled:!canAct||!workerReady||Number(self.score||0)<tuning.zoneCostFor(10,60)||(self.tacticalCooldowns?.zone||0)>now()});
     actions.push({icon:'⇄',title:'Zeit tauschen',detail:`30–90 Sek. gegen Punkte · ${Number(self.timeExchangesUsed||0)}/3`,action:openTimeTrade,disabled:!canAct||!workerReady||Number(self.timeExchangesUsed||0)>=3});
     const hiders=Object.values(state.room.players||{}).filter(candidate=>candidate.active&&candidate.role==='hider');
     actions.push({icon:'↗',title:'Hider umpositionieren',detail:`Abstand ${tuning.relocateDistance} m · ab ${tuning.relocationCost('one')} P`,action:openRelocationOptions,disabled:!canAct||!workerReady||!hiders.length||Number(self.score||0)<tuning.relocationCost('one')||(self.tacticalCooldowns?.relocate||0)>now()});
@@ -877,6 +882,7 @@ function renderQuickActions() {
     actions.push({icon:'⌗',title:'EMP-Falle',detail:'Falle am Standort legen',action:()=>useSkillFromInventory('trap'),disabled:!canAct || !inventory.includes('trap') || !state.ownLocation});
     const closeCall=self.effects?.closecall;
     if(inventory.includes('closecall')) actions.push({icon:'⚑',title:'Mutprobe',detail:closeCall?closeCall.progressSince?`Nähe halten · ${Math.max(0,Math.ceil((closeCall.duration-(now()-closeCall.progressSince))/1000))} s`:`Seeker wieder annähern · ${Math.ceil(closeCall.duration/1000)} s`:'20 m an Seeker · Zeit hält dich nah dran',action:()=>useSkillFromInventory('closecall'),disabled:!canAct||Boolean(closeCall)});
+    if(inventory.includes('freeze')) { const tuning=skillTuning('freeze',state.room.settings); actions.push({icon:'❄',title:'Frostimpuls',detail:`Seeker einfrieren · ${tuning.freezeRadius} m · ${tuning.duration} s`,action:()=>useSkillFromInventory('freeze'),disabled:!canAct}); }
   }
   actions.push({icon:'▤',title:'Aufgaben auswählen',detail:'Hider-Challenges öffnen',action:()=>selectTab('tasksTab'),disabled:!canAct || role!=='hider'});
   $('quickActions').innerHTML = actions.map((item,index) => `<button class="quick-action" type="button" data-quick="${index}" ${item.disabled ? 'disabled' : ''}><span>${item.icon}</span><strong>${item.title}</strong><small>${item.detail}</small></button>`).join('');
@@ -892,19 +898,32 @@ async function runTacticalAbility(ability,payload,successTitle,successMessage) {
   } catch(error) { toast('Fähigkeit nicht aktiviert',error.message||'Bitte Verbindung und Punkte prüfen.','warn',5500); }
 }
 
-function startRestrictedZonePlacement() {
-  const self=getSelf(),settings=state.room?.settings||{},tuning=tacticalTuning(settings);
-  if(!self || Number(self.score||0)<tuning.zoneCost) { toast('Zu wenig Punkte',`Die Sperrzone kostet ${tuning.zoneCost} Punkte.`,'warn'); return; }
+function placeRestrictedZone(radius,duration,settings=state.room?.settings||{}) {
+  const tuning=tacticalTuning(settings),cost=tuning.zoneCostFor(radius,duration),self=getSelf();
+  if(!self||Number(self.score||0)<cost) { toast('Zu wenig Punkte',`Diese Sperrzone kostet ${cost} Punkte.`,'warn'); return; }
   selectTab('mapTab');
   if(!beginMapPlacement(async center=>{
-    const zoneCenter=settings.center,radius=Number(settings.radius)||500;
-    if(!zoneCenter || distanceMeters(center,zoneCenter)>radius-tuning.zoneRadius) {
-      toast('Punkt außerhalb der Zone','Setze den Kreis vollständig innerhalb des Spielfelds.','warn');
-      startRestrictedZonePlacement(); return;
+    const zoneCenter=settings.center,mapRadius=Number(settings.radius)||500;
+    if(!zoneCenter||distanceMeters(center,zoneCenter)>mapRadius-radius) {
+      toast('Kreis passt nicht in die Spielzone','Verschiebe den Vorschaukreis vollständig in den Spielfeldrand.','warn');
+      placeRestrictedZone(radius,duration,settings); return;
     }
-    await runTacticalAbility('zone',{center},'Sperrzone aktiviert',`Kreis mit ${tuning.zoneRadius} m Radius für ${tuning.zoneDuration} Sekunden markiert.`);
-  })) { toast('Karte nicht bereit','Öffne zuerst die Spielkarte.','warn'); return; }
-  toast('Sperrzone platzieren',`Tippe innerhalb des Spielfelds auf die Kartenmitte. Radius ${tuning.zoneRadius} m · ${tuning.zoneCost} Punkte.`,'info',5000);
+    await runTacticalAbility('zone',{center,radius,duration},'Sperrzone aktiviert',`Radius ${radius} m · ${duration} Sekunden. Wer bereits darin steht, hat 45 Sekunden zum Verlassen.`);
+  },{radius,confirm:true,hint:'Tippe auf die Karte für die Vorschau des Sperrkreises'})) { toast('Karte nicht bereit','Öffne zuerst die Spielkarte.','warn'); return; }
+  toast('Sperrzone platzieren',`Radius ${radius} m · ${duration} Sekunden · ${cost} Punkte. Tippe auf die Karte, prüfe den Kreis und bestätige ihn.`,'info',5500);
+}
+
+function startRestrictedZonePlacement() {
+  const self=getSelf(),settings=state.room?.settings||{},tuning=tacticalTuning(settings);
+  if(!self) return;
+  openModal({kicker:'SEEKER / ZONENKONTROLLE',title:'Sperrzone einstellen',body:`<p class="modal-copy">Stelle Größe und Dauer ein. Danach setzt du den Kreis sichtbar auf der Karte und bestätigst die Vorschau. Der Kreis muss vollständig innerhalb des Spielfelds liegen.</p><label class="modal-field-label" for="restrictedRadius">Radius · 10–${tuning.maxZoneRadius} m</label><input id="restrictedRadius" class="modal-input" type="number" inputmode="numeric" min="10" max="${tuning.maxZoneRadius}" step="1" value="${tuning.zoneRadius}"><label class="modal-field-label" for="restrictedDuration">Dauer · 1–3 Minuten</label><input id="restrictedDuration" class="modal-input" type="number" inputmode="numeric" min="60" max="180" step="15" value="${tuning.zoneDuration}"><p class="modal-copy">Kosten: <strong id="restrictedCost">${tuning.zoneCostFor()}</strong> Punkte · Spieler, die beim Aktivieren im Kreis stehen, müssen ihn binnen 45 Sekunden verlassen.</p>`,actions:[{label:'Abbrechen',variant:'button-secondary'},{label:'Auf Karte platzieren',variant:'button-primary',keepOpen:true,onClick:()=>{
+    const radius=Number($('restrictedRadius')?.value),duration=Number($('restrictedDuration')?.value);
+    if(!Number.isInteger(radius)||radius<10||radius>tuning.maxZoneRadius||!Number.isInteger(duration)||duration<60||duration>180) { toast('Werte prüfen',`Radius: 10–${tuning.maxZoneRadius} m · Dauer: 60–180 Sekunden.`,'warn'); return; }
+    closeModal();
+    placeRestrictedZone(radius,duration,settings);
+  }}]});
+  const updateCost=()=>{ const radius=Number($('restrictedRadius')?.value),duration=Number($('restrictedDuration')?.value); if(Number.isInteger(radius)&&Number.isInteger(duration)) $('restrictedCost').textContent=String(tuning.zoneCostFor(radius,duration)); };
+  $('restrictedRadius')?.addEventListener('input',updateCost); $('restrictedDuration')?.addEventListener('input',updateCost);
 }
 
 function openTimeTrade() {
@@ -934,13 +953,22 @@ function openRelocationOptions() {
 }
 
 function renderSpecialNotices(self) {
-  const relocation=$('relocationNotice'),proximity=$('proximityNotice');
+  const relocation=$('relocationNotice'),zoneNotice=$('zoneEvacuationNotice'),proximity=$('proximityNotice');
   const pending=state.room?.phase==='playing'&&self?.role==='hider'?self.forcedRelocation:null;
   relocation?.classList.toggle('hidden',!pending);
   if(relocation&&pending) {
     const own=state.ownLocation||self.location,covered=own?Math.min(pending.minimumMeters,distanceMeters(own,pending.from)):0;
     const pct=Math.round(covered/pending.minimumMeters*100);
-    relocation.innerHTML=`<strong>UMPOSITIONIERUNG ERFORDERLICH · ${pending.minimumMeters} M</strong><span>${Math.round(covered)} / ${pending.minimumMeters} m erreicht. Bleib auf sicheren, öffentlichen Wegen.</span><div class="relocation-progress"><i style="width:${pct}%"></i></div>`;
+    const deadline=pending.deadlineAt||pending.createdAt+tacticalTuning(state.room.settings).relocationDeadlineSeconds*1000,remaining=Math.max(0,Math.ceil((deadline-now())/1000));
+    relocation.innerHTML=`<strong>JETZT UMSETZEN · NOCH ${formatTime(remaining)}</strong><span>Verlasse den markierten Kreis und erreiche mindestens ${pending.minimumMeters} m Abstand: ${Math.round(covered)} / ${pending.minimumMeters} m. Sonst scheidest du aus.</span><div class="relocation-progress"><i style="width:${pct}%"></i></div>`;
+  }
+  const obligations=state.room?.phase==='playing'&&self?.role==='hider'?Object.values(self.zoneEvacuations||{}).filter(item=>item?.deadlineAt):[];
+  const evacuation=obligations.sort((a,b)=>a.deadlineAt-b.deadlineAt)[0];
+  zoneNotice?.classList.toggle('hidden',!evacuation);
+  if(zoneNotice&&evacuation) {
+    const zone=state.room?.restrictedZones?.[evacuation.zoneId],remaining=Math.max(0,Math.ceil((evacuation.deadlineAt-now())/1000));
+    const radius=Number(zone?.radius)||0;
+    zoneNotice.innerHTML=`<strong>SPERRZONE VERLASSEN · NOCH ${formatTime(remaining)}</strong><span>Du stehst im markierten Sperrkreis${radius?` mit ${radius} m Radius`:''}. Geh jetzt auf einem sicheren Weg hinaus oder scheide aus.</span><div class="relocation-progress"><i style="width:${Math.max(0,Math.min(100,remaining/45*100))}%"></i></div>`;
   }
   const challenge=state.room?.phase==='playing'&&self?.role==='hider'?self.effects?.closecall:null;
   proximity?.classList.toggle('hidden',!challenge);
@@ -964,7 +992,7 @@ function renderShop() {
       const tuned=skillTuning(skill.id,state.room.settings);
       const phaseAllowed = state.room.phase === 'playing' || (side === 'hider' && state.room.phase === 'hide');
       const disabled = !phaseAllowed || Number(self.coins || 0) < tuned.price;
-      const effect=skill.id==='sweeper'?`Räumradius ${tuned.sweepRadius} m`:skill.id==='trap'?`EMP-Radius ${tuned.trapRadius} m · ${tuned.duration*6} s`:skill.id==='decoy'?`Marker bis ${tuned.decoyRange} m vom Zentrum · ${tuned.duration} s`:skill.id==='closecall'?`20 m Nähe · ${tuned.duration} s · +${tacticalTuning(state.room.settings).closeCallReward} Punkte`:tuned.duration?`${tuned.duration} Sekunden Wirkung`:'Einmaliger Schutz';
+      const effect=skill.id==='sweeper'?`Räumradius ${tuned.sweepRadius} m`:skill.id==='trap'?`EMP-Radius ${tuned.trapRadius} m · ${tuned.duration*6} s`:skill.id==='decoy'?`Marker bis ${tuned.decoyRange} m vom Zentrum · ${tuned.duration} s`:skill.id==='closecall'?`20 m Nähe · ${tuned.duration} s · +${tacticalTuning(state.room.settings).closeCallReward} Punkte`:skill.id==='freeze'?`Reichweite ${tuned.freezeRadius} m · ${tuned.duration} s`:tuned.duration?`${tuned.duration} Sekunden Wirkung`:'Einmaliger Schutz';
       return `<article class="shop-item"><div class="shop-item-top"><span class="shop-item-icon">${SKILL_ICONS[skill.id] || skill.icon}</span><span class="shop-price">◈ ${tuned.price}</span></div><span class="shop-side-label">${side === 'seeker' ? 'SEEKER TECH' : 'HIDER TECH'} · ZONE ${state.room.settings.radius} M</span><h3>${escapeHTML(skill.short)}</h3><p>${escapeHTML(skill.description)} <strong>${effect}</strong></p><button class="button button-secondary" data-buy-skill="${skill.id}" type="button" ${disabled ? 'disabled' : ''}>${phaseAllowed ? 'Kaufen' : 'Später verfügbar'} <span>→</span></button></article>`;
     }).join('');
     $('shopGrid').querySelectorAll('[data-buy-skill]').forEach((button) => button.addEventListener('click', async () => {
@@ -1035,6 +1063,16 @@ function selectTab(tabId) {
   Sound.click();
 }
 
+function startGPSWatch() {
+  if(state.watchId!==null||!state.gpsAuthorized||!state.gpsWatchCallbacks||!('geolocation' in navigator)) return;
+  try {
+    const {onSuccess,onError}=state.gpsWatchCallbacks;
+    // Reuse a recent browser GPS fix for a short window to reduce repeated
+    // high-power sensor wakes while keeping game actions on fresh positions.
+    state.watchId=navigator.geolocation.watchPosition(onSuccess,onError,{enableHighAccuracy:true,timeout:18000,maximumAge:5000});
+  } catch(error) { console.warn('GPS watch could not start',error); }
+}
+
 async function requestGPS() {
   if (!state.roomCode) return;
   if (!('geolocation' in navigator)) { toast('GPS nicht verfügbar', 'Dieser Browser stellt keine Standortfunktion bereit.', 'danger'); return; }
@@ -1045,6 +1083,7 @@ async function requestGPS() {
   const requestedCode=state.roomCode;
   const onSuccess = async (position) => {
     if (state.roomCode !== requestedCode || !state.uid) return;
+    state.gpsAuthorized=true;
     try { state.ownLocation = makeLocationSample(position,now()); }
     catch (error) { state.gpsPending=false; state.gpsError='GPS-Messung ungültig'; console.warn('Invalid GPS sample',error); return; }
     if (!state.connected) state.gpsSyncStatus='offline';
@@ -1073,6 +1112,7 @@ async function requestGPS() {
   };
   const onError = (error) => {
     state.gpsPending = false;
+    state.gpsAuthorized=false; state.gpsWatchCallbacks=null;
     state.ownLocation = null; state.zone = null; state.gpsError = error?.code === 1 ? 'GPS verweigert' : 'GPS nicht verfügbar';
     if (state.watchId !== null) navigator.geolocation.clearWatch(state.watchId);
     state.watchId = null;
@@ -1082,10 +1122,9 @@ async function requestGPS() {
   };
   try {
     // getCurrentPosition presents a permission prompt only after the user's explicit click.
+    state.gpsWatchCallbacks={onSuccess,onError};
     navigator.geolocation.getCurrentPosition(onSuccess, onError, { enableHighAccuracy:true, timeout:14000, maximumAge:2000 });
-    state.watchId = navigator.geolocation.watchPosition(onSuccess, (error) => {
-      onError(error);
-    }, { enableHighAccuracy:true, timeout:18000, maximumAge:3500 });
+    if(['hide','playing'].includes(state.room?.phase)) startGPSWatch();
   } catch (error) { onError(error); }
 }
 
@@ -1118,6 +1157,7 @@ function localExit() {
   state.unsubscribe?.(); state.unsubscribe = null;
   if (state.watchId !== null && 'geolocation' in navigator) navigator.geolocation.clearWatch(state.watchId);
   state.watchId = null;
+  state.gpsAuthorized=false; state.gpsWatchCallbacks=null;
   clearInterval(state.taskProgressTimer);
   releaseRoundPhotos();
   state.roomCode = null; state.room = null; state.ownLocation = null;
@@ -1375,6 +1415,7 @@ function tick() {
   const room = state.room;
   if (!room || !state.roomCode) return;
   const self=getSelf();
+  renderSpecialNotices(self);
   const cooldownLeft=Math.max(0,Math.ceil(((Number(self?.taskCooldownUntil)||0)-now())/1000));
   const tasksUnavailable=getBackendMode()!=='worker';
   const cooldown=$('taskCooldown');
@@ -1447,7 +1488,7 @@ function tick() {
   if (!$('gameScreen').classList.contains('hidden')) {
     const second = timerSeconds();
     $('matchTimer').textContent = formatTime(second);
-    $('freezeTimer').textContent = formatTime(second);
+    $('freezeTimer').textContent = self?.effects?.frozenUntil>now() ? formatTime(Math.ceil((self.effects.frozenUntil-now())/1000)) : formatTime(second);
     const phase = room.phase;
     if (['countdown','reveal'].includes(phase) && second !== state.lastCountdownSecond) {
       state.lastCountdownSecond = second;

@@ -120,20 +120,29 @@ export async function mutateRoom(code, mutator) {
 export function subscribeRoom(code, onValue, onError = () => {}) {
   requireBackend();
   if (WORKER_URL) {
-    let stopped = false, timer = null, lastValue = null;
+    let stopped = false, timer = null, revision = null, lastValue = null, inFlight = false;
+    const schedule=()=>{ if(!stopped) timer=setTimeout(poll,document.visibilityState==='hidden'?30000:5000); };
     const poll = async () => {
+      if(stopped||inFlight) return;
+      inFlight=true;
       try {
-        const room = await getRoom(code);
+        const suffix=Number.isSafeInteger(revision)?`?since=${revision}`:'';
+        const data=await workerRequest(`/rooms/${code}${suffix}`);
         if (stopped) return;
-        const value = JSON.stringify(room);
-        if (value !== lastValue) { lastValue = value; onValue(room); }
+        if(Number.isSafeInteger(data.revision)) revision=data.revision;
+        if(!data.unchanged) {
+          const value=JSON.stringify(data.room??null);
+          if(value!==lastValue) { lastValue=value; onValue(data.room??null); }
+        }
       } catch (error) { if (!stopped) onError(error); }
       // Keep live play responsive while staying well inside Cloudflare's free
-      // daily request allowance for normal-length sessions; background tabs back off.
-      finally { if (!stopped) timer = setTimeout(poll, document.visibilityState === 'hidden' ? 30000 : 5000); }
+      // request allowance; unchanged revisions carry only a tiny response body.
+      finally { inFlight=false; schedule(); }
     };
+    const onVisibility=()=>{ if(document.visibilityState==='visible') { clearTimeout(timer); poll(); } };
+    document.addEventListener('visibilitychange',onVisibility);
     poll();
-    return () => { stopped = true; clearTimeout(timer); };
+    return () => { stopped = true; clearTimeout(timer); document.removeEventListener('visibilitychange',onVisibility); };
   }
   if (backendMode === 'firebase') {
     return firebaseApi.onValue(roomRef(code), (snapshot) => onValue(snapshot.exists() ? normalizeRoom(snapshot.val()) : null), onError);
@@ -179,7 +188,7 @@ async function workerRequest(path, body) {
   const data = await response.json();
   connectionListener?.(true);
   if (!response.ok) {
-    const messages={NO_OBJECTIVES:'Für diese Aufgabe ist gerade kein Ziel verfügbar.',TASK_UNAVAILABLE:'Diese Aufgabe ist in deiner Rolle oder Spielphase nicht verfügbar.',TASK_HIDER_NOT_NEARBY:'Kein aktiver Hider im 10-m-Suchradius.',TASK_LOCATION_REQUIRED:'Erreiche das markierte Ziel innerhalb von 10 m mit einer genauen GPS-Messung; dieser Versuch ist fehlgeschlagen.',TASK_NOT_HELD:'Du hast den Ort verlassen oder warst zu lange offline; dieser Versuch ist fehlgeschlagen.',TASK_EXPIRED:'Zeit abgelaufen; dieser Versuch ist fehlgeschlagen.',TASK_TOO_FAST:'Die Chiffre wurde zu schnell eingereicht; der Versuch ist fehlgeschlagen.',WRONG_ANSWER:'Falsche Antwort; dieser Versuch ist fehlgeschlagen.',INVALID_PHOTO:'Das Bild muss ein kleines JPEG ohne EXIF-Daten sein; der Versuch ist fehlgeschlagen.',PHOTO_ALREADY_SUBMITTED:'Für diese Runde wurde bereits ein Foto eingereicht.',INVALID_CHALLENGE:'Challenge fehlgeschlagen oder abgelaufen.',NOT_MEMBER:'Du bist noch kein bestätigtes Raum-Mitglied.',HOST_ONLY:'Nur der Host darf diese Aktion ausführen.',LOBBY_CLOSED:'Der Raum ist geschlossen oder läuft bereits.',ROOM_FULL:'Der Raum ist voll (max. 20 Spieler).',NAME_IN_USE:'Dieser Codename wird im Raum bereits verwendet.',ROOM_EXPIRED:'Der Raumcode existiert nicht mehr. Bitte prüfe den Code oder erstelle eine neue Lobby.',STALE_CATCH:'Diese Fangaktion ist nicht mehr gültig.',CATCH_RANGE_REQUIRED:'Du musst dich innerhalb von 8 m befinden, um einen Fang auszulösen.',TARGET_NOT_CATCHABLE:'Dieser Hider ist nicht mehr fangbar.',RATE_LIMIT:'Zu viele Aktionen. Bitte kurz warten.',CENTER_REQUIRED:'Bitte zuerst einen Zonenmittelpunkt wählen.',FRESH_GPS_REQUIRED:'Für diese Aktion wird eine aktuelle GPS-Messung benötigt.',TASK_COOLDOWN:'Bitte vor einer neuen Aufgabe kurz warten.',FROZEN:'Spielaktionen sind während der Sperrzeit nicht verfügbar.',RELOCATION_REQUIRED:'Du musst erst den geforderten Abstand zu deinem vorherigen Standort erreichen.',RESTRICTED_AREA:'Dieser Kartenabschnitt ist vorübergehend gesperrt. Wähle einen sicheren Weg außen herum.',POINTS_REQUIRED:'Dafür hast du nicht genug Punkte.',ABILITY_COOLDOWN:'Diese Fähigkeit hat noch Cooldown.',ABILITY_UNAVAILABLE:'Diese Fähigkeit ist in dieser Rolle oder Spielphase nicht verfügbar.',SEEKER_NOT_NEARBY:'Für die Mutprobe muss ein Seeker innerhalb von 20 m sein.',SKILL_UNAVAILABLE:'Diese Fähigkeit ist nicht in deinem Inventar.',NO_ACTIVE_HIDERS:'Es gibt keine aktiven Hider mehr.',RELOCATION_PENDING:'Mindestens ein ausgewählter Hider hat noch eine offene Umpositionierung.',ZONE_LIMIT:'Es sind bereits drei Sperrzonen aktiv.',EXCHANGE_LIMIT:'Du hast deine drei Zeit-Tausche für diese Runde genutzt.',MINIMUM_GAME_TIME:'Der Tausch muss mindestens fünf Minuten Restspielzeit übrig lassen.',INVALID_ABILITY:'Diese Fähigkeit ist ungültig.',CODE_IN_USE:'Dieser Raumcode ist bereits vergeben.',UNAUTHENTICATED:'Die Anmeldung ist abgelaufen. Bitte erneut anmelden.',ACCOUNT_REQUIRED:'Für gespeicherte Profile und den Testmodus brauchst du ein registriertes Konto.',TEST_MODE_DENIED:'Der Test-Zugangscode stimmt nicht.',TEST_MODE_DISABLED:'Der geschützte Testmodus ist derzeit nicht freigeschaltet.',PROFILE_INVALID:'Profilname oder Avatar-Optik ist ungültig.'};
+    const messages={NO_OBJECTIVES:'Für diese Aufgabe ist gerade kein Ziel verfügbar.',TASK_UNAVAILABLE:'Diese Aufgabe ist in deiner Rolle oder Spielphase nicht verfügbar.',TASK_HIDER_NOT_NEARBY:'Kein aktiver Hider im 10-m-Suchradius.',TASK_LOCATION_REQUIRED:'Erreiche das markierte Ziel innerhalb von 10 m mit einer genauen GPS-Messung; dieser Versuch ist fehlgeschlagen.',TASK_NOT_HELD:'Du hast den Ort verlassen oder warst zu lange offline; dieser Versuch ist fehlgeschlagen.',TASK_EXPIRED:'Zeit abgelaufen; dieser Versuch ist fehlgeschlagen.',TASK_TOO_FAST:'Die Chiffre wurde zu schnell eingereicht; der Versuch ist fehlgeschlagen.',WRONG_ANSWER:'Falsche Antwort; dieser Versuch ist fehlgeschlagen.',INVALID_PHOTO:'Das Bild muss ein kleines JPEG ohne EXIF-Daten sein; der Versuch ist fehlgeschlagen.',PHOTO_ALREADY_SUBMITTED:'Für diese Runde wurde bereits ein Foto eingereicht.',INVALID_CHALLENGE:'Challenge fehlgeschlagen oder abgelaufen.',NOT_MEMBER:'Du bist noch kein bestätigtes Raum-Mitglied.',HOST_ONLY:'Nur der Host darf diese Aktion ausführen.',LOBBY_CLOSED:'Der Raum ist geschlossen oder läuft bereits.',ROOM_FULL:'Der Raum ist voll (max. 20 Spieler).',NAME_IN_USE:'Dieser Codename wird im Raum bereits verwendet.',ROOM_EXPIRED:'Der Raumcode existiert nicht mehr. Bitte prüfe den Code oder erstelle eine neue Lobby.',STALE_CATCH:'Diese Fangaktion ist nicht mehr gültig.',CATCH_RANGE_REQUIRED:'Du musst dich innerhalb von 8 m befinden, um einen Fang auszulösen.',TARGET_NOT_CATCHABLE:'Dieser Hider ist nicht mehr fangbar.',RATE_LIMIT:'Zu viele Aktionen. Bitte kurz warten.',CENTER_REQUIRED:'Bitte zuerst einen Zonenmittelpunkt wählen.',FRESH_GPS_REQUIRED:'Für diese Aktion wird eine aktuelle GPS-Messung benötigt.',TASK_COOLDOWN:'Bitte vor einer neuen Aufgabe kurz warten.',FROZEN:'Spielaktionen sind während der Sperrzeit nicht verfügbar.',RELOCATION_REQUIRED:'Du musst erst den geforderten Abstand zu deinem vorherigen Standort erreichen.',RESTRICTED_AREA:'Dieser Kartenabschnitt ist vorübergehend gesperrt. Wähle einen sicheren Weg außen herum.',POINTS_REQUIRED:'Dafür hast du nicht genug Punkte.',ABILITY_COOLDOWN:'Diese Fähigkeit hat noch Cooldown.',ABILITY_UNAVAILABLE:'Diese Fähigkeit ist in dieser Rolle oder Spielphase nicht verfügbar.',SEEKER_NOT_NEARBY:'Kein Seeker ist mit frischer GPS-Messung in Reichweite.',SKILL_UNAVAILABLE:'Diese Fähigkeit ist nicht in deinem Inventar.',INVALID_ZONE_SETTINGS:'Radius oder Sperrdauer liegen außerhalb der erlaubten Werte.',NO_ACTIVE_HIDERS:'Es gibt keine aktiven Hider mehr.',RELOCATION_PENDING:'Mindestens ein ausgewählter Hider hat noch eine offene Umpositionierung.',ZONE_LIMIT:'Es sind bereits drei Sperrzonen aktiv.',EXCHANGE_LIMIT:'Du hast deine drei Zeit-Tausche für diese Runde genutzt.',MINIMUM_GAME_TIME:'Der Tausch muss mindestens fünf Minuten Restspielzeit übrig lassen.',INVALID_ABILITY:'Diese Fähigkeit ist ungültig.',CODE_IN_USE:'Dieser Raumcode ist bereits vergeben.',UNAUTHENTICATED:'Die Anmeldung ist abgelaufen. Bitte erneut anmelden.',ACCOUNT_REQUIRED:'Für gespeicherte Profile und den Testmodus brauchst du ein registriertes Konto.',TEST_MODE_DENIED:'Der Test-Zugangscode stimmt nicht.',TEST_MODE_DISABLED:'Der geschützte Testmodus ist derzeit nicht freigeschaltet.',PROFILE_INVALID:'Profilname oder Avatar-Optik ist ungültig.'};
     const error=new Error(messages[data.error] || data.error || `Backend: ${response.status}`);
     error.code=data.error;
     throw error;

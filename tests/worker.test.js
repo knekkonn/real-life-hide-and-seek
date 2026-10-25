@@ -123,6 +123,19 @@ test('skill prices and active ranges follow strength and playzone scale', () => 
   assert.ok(wide.sweepRadius>compact.sweepRadius);
   assert.ok(skillTuning('sweeper',{radius:500,gameDuration:1800}).price>skillTuning('sweeper',{radius:500,gameDuration:300}).price,'skill prices scale with match length');
   assert.ok(skillTuning('shield',1000).price>skillTuning('sprint',1000).price,'stronger effects cost more');
+  assert.ok(skillTuning('freeze',1800).freezeRadius>skillTuning('freeze',200).freezeRadius,'Hider freeze range scales with the field');
+});
+
+test('Hider Frostimpuls freezes only a nearby Seeker and blocks actions until its server timer ends', async () => {
+  const room=playing(),timestamp=Date.now(),duration=skillTuning('freeze',room.settings).duration;
+  room.players.guest.inventory=['freeze'];
+  await applyAction(room,'guest',{action:'activateSkill',skillId:'freeze'},timestamp);
+  assert.equal(room.players.host.effects.freezeSource,'hider');
+  assert.equal(room.players.host.effects.frozenUntil,timestamp+duration*1000);
+  assert.ok(!room.players.guest.inventory.includes('freeze'));
+  await assert.rejects(applyAction(room,'host',{action:'requestCatch',targetId:'guest'},timestamp+1000),/FROZEN/);
+  await applyAction(room,'host',{action:'requestCatch',targetId:'guest'},timestamp+(duration+1)*1000);
+  assert.equal(room.players.guest.status,'caught');
 });
 
 test('Hider proximity skill pays server-checked points only after sustained close GPS samples', async () => {
@@ -160,6 +173,57 @@ test('Seeker map restrictions spend dynamic points, display to Hiders, and block
   assert.equal(room.players.guest.location.lng,0,'a rejected entry never overwrites the last accepted GPS point');
 });
 
+test('Sperrzonen accept selected radius and duration, show affected Hiders a private evacuation deadline, and charge by size', async () => {
+  const room=playing(),timestamp=Date.now(),tuning=tacticalTuning(room.settings); room.players.host.score=200;
+  room.players.other.location={lat:0,lng:.004,accuracy:5,measuredAt:timestamp}; room.players.other.locationAt=timestamp;
+  await applyAction(room,'host',{action:'useTacticalAbility',ability:'zone',center:{lat:0,lng:.001},radius:120,duration:90},timestamp);
+  const zone=Object.values(room.restrictedZones)[0];
+  assert.equal(zone.radius,120); assert.equal(zone.expiresAt,timestamp+90000);
+  assert.equal(room.players.guest.zoneEvacuations[zone.id].deadlineAt,timestamp+45000);
+  assert.equal(room.players.other.zoneEvacuations,undefined);
+  assert.equal(publicRoom(room,'guest',timestamp).players.guest.zoneEvacuations[zone.id].deadlineAt,timestamp+45000);
+  assert.equal(publicRoom(room,'other',timestamp).players.guest.zoneEvacuations,undefined);
+  assert.equal(room.players.host.score,200-tuning.zoneCostFor(120,90));
+  const later=timestamp+91_000;
+  await applyAction(room,'host',{action:'updatePlayerLocation',location:{lat:0,lng:0,accuracy:5,measuredAt:later-1}},later-1);
+  await assert.rejects(applyAction(room,'host',{action:'useTacticalAbility',ability:'zone',center:{lat:0,lng:.001},radius:tuning.maxZoneRadius+1,duration:90},later),/INVALID_ZONE_SETTINGS/);
+});
+
+test('a Hider who misses the restricted-zone evacuation deadline is eliminated and rewards its Seeker', async () => {
+  const room=playing(),timestamp=Date.now(); room.players.host.score=150;
+  await applyAction(room,'host',{action:'useTacticalAbility',ability:'zone',center:{lat:0,lng:.001},radius:120,duration:90},timestamp);
+  const zone=Object.values(room.restrictedZones)[0];
+  zone.allowedInside=['guest']; room.players.guest.zoneEvacuations[zone.id].deadlineAt=timestamp+1000;
+  const before=room.players.host.score;
+  await applyAction(room,'guest',{action:'updatePlayerLocation',location:{lat:0,lng:.001,accuracy:5,measuredAt:timestamp+1001}},timestamp+1001);
+  assert.equal(room.players.guest.active,false); assert.equal(room.players.guest.status,'caught');
+  assert.ok(room.players.host.score>before); assert.equal(room.players.host.hidersFound,1);
+});
+
+test('a timely GPS sample received just after the zone deadline clears the evacuation instead of eliminating the Hider', async () => {
+  const room=playing(),timestamp=Date.now(); room.players.host.score=150;
+  await applyAction(room,'host',{action:'useTacticalAbility',ability:'zone',center:{lat:0,lng:.001},radius:120,duration:90},timestamp);
+  const zone=Object.values(room.restrictedZones)[0]; zone.allowedInside=['guest']; room.players.guest.zoneEvacuations[zone.id].deadlineAt=timestamp+1000;
+  const receivedAt=timestamp+2000;
+  await applyAction(room,'guest',{action:'updatePlayerLocation',location:{lat:0,lng:.003,accuracy:5,measuredAt:timestamp+900}},receivedAt);
+  assert.equal(room.players.guest.active,true);
+  assert.equal(room.players.guest.zoneEvacuations[zone.id],undefined);
+  assert.equal(room.players.host.hidersFound,0);
+});
+
+test('a zone evacuation still fails after delayed settlement even when the circle itself has expired', async () => {
+  const room=playing(),timestamp=Date.now(); room.players.host.score=150;
+  await applyAction(room,'host',{action:'useTacticalAbility',ability:'zone',center:{lat:0,lng:.001},radius:120,duration:90},timestamp);
+  const zone=Object.values(room.restrictedZones)[0]; zone.allowedInside=['guest'];
+  room.players.guest.zoneEvacuations[zone.id].deadlineAt=timestamp+1000;
+  zone.expiresAt=timestamp+1500;
+  const before=room.players.host.score;
+  await applyAction(room,'host',{action:'updatePlayerLocation',location:{lat:0,lng:0,accuracy:5,measuredAt:timestamp+5000}},timestamp+5000);
+  assert.equal(room.players.guest.active,false);
+  assert.ok(room.players.host.score>before);
+  assert.equal(room.players.host.hidersFound,1);
+});
+
 test('a Hider already inside a restricted circle can leave but cannot later re-enter', async () => {
   const room=playing(),timestamp=Date.now(),center={lat:0,lng:.001}; room.players.host.score=100;
   room.players.guest.location={...center,accuracy:5,measuredAt:timestamp}; room.players.guest.locationAt=timestamp;
@@ -180,6 +244,26 @@ test('Seeker relocation requires each target to move the map-scaled minimum dist
   const moved={lat:.0008,lng:0,accuracy:5,measuredAt:timestamp+2000};
   await applyAction(room,'guest',{action:'updatePlayerLocation',location:moved},timestamp+2000);
   assert.equal(room.players.guest.forcedRelocation,null,'the server clears the requirement after the minimum distance');
+});
+
+test('a Hider who misses a relocation deadline is eliminated and rewards the commanding Seeker', async () => {
+  const room=playing(),timestamp=Date.now(); room.players.host.score=150;
+  await applyAction(room,'host',{action:'useTacticalAbility',ability:'relocate',mode:'one',targetId:'guest'},timestamp);
+  room.players.guest.forcedRelocation.deadlineAt=timestamp+1000;
+  const before=room.players.host.score;
+  await applyAction(room,'guest',{action:'updatePlayerLocation',location:{lat:0,lng:0,accuracy:5,measuredAt:timestamp+1001}},timestamp+1001);
+  assert.equal(room.players.guest.active,false); assert.equal(room.players.guest.status,'caught');
+  assert.ok(room.players.host.score>before); assert.equal(room.players.host.hidersFound,1);
+});
+
+test('a relocation completed by a pre-deadline GPS sample is accepted if network delivery is slightly late', async () => {
+  const room=playing(),timestamp=Date.now(); room.players.host.score=150;
+  await applyAction(room,'host',{action:'useTacticalAbility',ability:'relocate',mode:'one',targetId:'guest'},timestamp);
+  room.players.guest.forcedRelocation.deadlineAt=timestamp+1000;
+  await applyAction(room,'guest',{action:'updatePlayerLocation',location:{lat:.0008,lng:0,accuracy:5,measuredAt:timestamp+900}},timestamp+2000);
+  assert.equal(room.players.guest.active,true);
+  assert.equal(room.players.guest.forcedRelocation,null);
+  assert.equal(room.players.host.hidersFound,0);
 });
 
 test('Seeker relocation supports a random target and the whole Hider team', async () => {
@@ -512,8 +596,13 @@ test('HTTP/D1 integration joins players directly and blocks outsider reads', asy
   globalThis.fetch=async(url,options)=>new Response(JSON.stringify({users:[{localId:JSON.parse(options.body).idToken}]}),{status:200});
   try {
     const env={DB:d1(),ALLOWED_ORIGIN:'https://knekkonn.github.io'};
-    const request=(uid,body)=>new Request('https://api.test/rooms/1234',{method:body?'POST':'GET',headers:{Authorization:`Bearer ${uid}`,Origin:env.ALLOWED_ORIGIN,...(body?{'Content-Type':'application/json'}:{})},...(body?{body:JSON.stringify(body)}:{})});
+    const request=(uid,body,path='/rooms/1234')=>new Request(`https://api.test${path}`,{method:body?'POST':'GET',headers:{Authorization:`Bearer ${uid}`,Origin:env.ALLOWED_ORIGIN,...(body?{'Content-Type':'application/json'}:{})},...(body?{body:JSON.stringify(body)}:{})});
     assert.equal((await worker.fetch(request('host',{action:'create',name:'HOST'}),env)).status,200);
+    const initial=await (await worker.fetch(request('host'),env)).json();
+    assert.ok(initial.room,'the initial revision 0 fetch must return the room rather than an unchanged marker');
+    assert.equal(initial.revision,0);
+    const unchangedZero=await (await worker.fetch(request('host',null,'/rooms/1234?since=0'),env)).json();
+    assert.equal(unchangedZero.unchanged,true);
     assert.equal((await worker.fetch(request('stranger'),env)).status,403);
     const joins=await Promise.all(['guest','other'].map(uid=>worker.fetch(request(uid,{action:'join',name:uid.toUpperCase()}),env)));
     assert.deepEqual(joins.map(r=>r.status),[200,200]);
@@ -524,6 +613,10 @@ test('HTTP/D1 integration joins players directly and blocks outsider reads', asy
     const guestView=await (await worker.fetch(request('guest'),env)).json();
     assert.equal(Object.keys(guestView.room.players).length,3);
     assert.equal(guestView.room.joinRequests,undefined);
+    assert.ok(Number.isSafeInteger(guestView.revision));
+    const unchanged=await (await worker.fetch(request('guest',null,`/rooms/1234?since=${guestView.revision}`),env)).json();
+    assert.equal(unchanged.unchanged,true);
+    assert.equal(unchanged.room,undefined,'unchanged polling does not resend the room state');
   } finally {globalThis.fetch=originalFetch;}
 });
 
