@@ -9,6 +9,7 @@ let playerUid = null;
 let initialized = false;
 const demoListeners = new Map();
 const DEMO_PREFIX = 'hideseek-room:';
+const FIREBASE_PLAYER_SESSION_KEY = 'hideseek-firebase-player-session-id';
 
 function demoKey(code) { return `${DEMO_PREFIX}${code}`; }
 function readDemoRoom(code) {
@@ -24,6 +25,25 @@ function emitDemoRoom(code, room) {
 function structuredCloneSafe(value) {
   if (value == null) return value;
   return JSON.parse(JSON.stringify(value));
+}
+
+function getFirebasePlayerSessionId() {
+  // Firebase's anonymous auth user is shared across tabs. The game needs a
+  // separate identity per tab so two people can join from the same browser.
+  // sessionStorage keeps that identity stable through reloads, but isolates
+  // independent tabs and browser sessions.
+  try {
+    let id = sessionStorage.getItem(FIREBASE_PLAYER_SESSION_KEY);
+    if (!id) {
+      const randomId = globalThis.crypto?.randomUUID?.().replaceAll('-', '')
+        || `${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
+      id = `player_${randomId}`;
+      sessionStorage.setItem(FIREBASE_PLAYER_SESSION_KEY, id);
+    }
+    return id;
+  } catch {
+    return `player_${globalThis.crypto?.randomUUID?.().replaceAll('-', '') || Math.random().toString(36).slice(2)}`;
+  }
 }
 
 export async function initBackend() {
@@ -43,8 +63,8 @@ export async function initBackend() {
       dbMod.onValue(dbMod.ref(db, '.info/serverTimeOffset'), (snapshot) => {
         setServerTimeOffset(Number(snapshot.val()) || 0);
       });
-      const credential = await authMod.signInAnonymously(auth);
-      playerUid = credential.user.uid;
+      await authMod.signInAnonymously(auth);
+      playerUid = getFirebasePlayerSessionId();
       backendMode = 'firebase';
       return { mode: backendMode, uid: playerUid };
     } catch (error) {
