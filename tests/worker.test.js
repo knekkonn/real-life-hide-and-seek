@@ -12,7 +12,7 @@ import { skillTuning, tacticalTuning } from '../js/skills.js';
 function playing() {
   const room=createRoomData('host','HOST'); room.code='1234';
   addPlayerToRoom(room,'guest','GUEST'); addPlayerToRoom(room,'other','OTHER');
-  room.phase='playing'; room.settings.center={lat:0,lng:0};
+  room.phase='playing'; room.settings.center={lat:0,lng:0}; room.matchEndsAt=Date.now()+1200000;
   for (const p of Object.values(room.players)) {p.role=p.id==='host'?'seeker':'hider';p.status=p.role;p.active=true;p.location={lat:0,lng:0,accuracy:5,measuredAt:Date.now()};p.locationAt=Date.now();}
   return room;
 }
@@ -138,34 +138,55 @@ test('Hider Frostimpuls freezes only a nearby Seeker and blocks actions until it
   assert.equal(room.players.guest.status,'caught');
 });
 
-test('Hider proximity skill pays server-checked points only after sustained close GPS samples', async () => {
-  const room=playing(),timestamp=Date.now(); room.matchEndsAt=timestamp+600000;
-  room.players.guest.inventory=['closecall'];
-  await applyAction(room,'guest',{action:'activateSkill',skillId:'closecall'},timestamp);
-  assert.ok(room.players.guest.effects.closecall);
-  const update=async(uid,at,lat=0)=>applyAction(room,uid,{action:'updatePlayerLocation',location:{lat,lng:0,accuracy:5,measuredAt:at}},at);
-  await update('guest',timestamp+5000);
-  await update('host',timestamp+10000);
-  await update('guest',timestamp+15000);
-  await update('host',timestamp+20000);
-  assert.equal(room.players.guest.score,tacticalTuning(room.settings).closeCallReward);
-  assert.equal(room.players.guest.effects.closecall,undefined,'the reward is paid once and closes the challenge');
-  assert.equal(publicRoom(room,'other').players.guest.effects,undefined,'proximity progress stays private');
+test('Mutprobe is a once-per-round Hider task and pays exactly one point per proven second', async () => {
+  const room=playing(),timestamp=Date.now();
+  const start=await applyAction(room,'guest',{action:'beginTask',kind:'closecall'},timestamp);
+  const update=async(uid,at,measuredAt=at)=>applyAction(room,uid,{action:'updatePlayerLocation',location:{lat:0,lng:0,accuracy:5,measuredAt}},at);
+  for(let elapsed=5000;elapsed<=60000;elapsed+=5000) {
+    await update('guest',timestamp+elapsed); await update('host',timestamp+elapsed);
+    await update('guest',timestamp+elapsed);
+  }
+  assert.equal(room.players.guest.score,60);
+  assert.equal(room.players.guest.coins,0,'Mutprobe awards score, not shop currency');
+  assert.equal(room.players.guest.activeTask.completed,true);
+  assert.equal(room.players.guest.tasksSolved,1);
+  assert.equal(publicRoom(room,'other',timestamp+60000).players.guest.activeTask,undefined);
+  assert.equal(publicRoom(room,'guest',timestamp+60000).players.guest.activeTask.seekerId,undefined);
+  await assert.rejects(applyAction(room,'guest',{action:'beginTask',kind:'closecall'},timestamp+91000),/TASK_ALREADY_USED/);
+  await assert.rejects(applyAction(room,'guest',{action:'completeTask',proof:{id:start.result.id}},timestamp+92000),/INVALID_CHALLENGE/);
+  room.phase='finished'; await applyAction(room,'host',{action:'newRound'},timestamp+93000);
+  assert.equal(room.players.guest.closeCallUsed,false,'only a new round restores the attempt');
 });
 
-test('Hider proximity progress resets as soon as the Seeker leaves its range', async () => {
-  const room=playing(),timestamp=Date.now(); room.matchEndsAt=timestamp+600000;
-  room.players.guest.inventory=['closecall'];
-  await applyAction(room,'guest',{action:'activateSkill',skillId:'closecall'},timestamp);
-  await applyAction(room,'host',{action:'updatePlayerLocation',location:{lat:.001,lng:0,accuracy:5,measuredAt:timestamp+5000}},timestamp+5000);
-  await applyAction(room,'guest',{action:'updatePlayerLocation',location:{lat:0,lng:0,accuracy:5,measuredAt:timestamp+10000}},timestamp+10000);
-  assert.equal(room.players.guest.effects.closecall.progressSince,0);
-  assert.equal(room.players.guest.score,0);
+test('Mutprobe ends on leaving 15 m or missing GPS without retroactive or duplicated points', async () => {
+  for(const leave of [true,false]) {
+    const room=playing(),timestamp=Date.now();
+    await applyAction(room,'guest',{action:'beginTask',kind:'closecall'},timestamp);
+    for(const uid of ['host','guest']) await applyAction(room,uid,{action:'updatePlayerLocation',location:{lat:0,lng:0,accuracy:5,measuredAt:timestamp+5000}},timestamp+5000);
+    assert.equal(room.players.guest.score,5);
+    if(leave) await applyAction(room,'host',{action:'updatePlayerLocation',location:{lat:.00015,lng:0,accuracy:5,measuredAt:timestamp+6000}},timestamp+6000);
+    else await applyAction(room,'guest',{action:'updatePlayerLocation',location:{lat:0,lng:0,accuracy:5,measuredAt:timestamp+16000}},timestamp+16000);
+    assert.equal(room.players.guest.activeTask.completed,true);
+    assert.equal(room.players.guest.score,5);
+    await assert.rejects(applyAction(room,'guest',{action:'beginTask',kind:'closecall'},timestamp+140000),/TASK_ALREADY_USED/);
+  }
+});
+
+test('Mutprobe rejects Seekers, hiding phase, out-of-range and frozen opponents', async () => {
+  const room=playing(),timestamp=Date.now();
+  await assert.rejects(applyAction(room,'host',{action:'beginTask',kind:'closecall'},timestamp),/TASK_UNAVAILABLE/);
+  room.phase='hide';
+  await assert.rejects(applyAction(room,'guest',{action:'beginTask',kind:'closecall'},timestamp),/TASK_UNAVAILABLE/);
+  room.phase='playing'; room.players.host.location.lat=.00015;
+  await assert.rejects(applyAction(room,'guest',{action:'beginTask',kind:'closecall'},timestamp),/SEEKER_NOT_NEARBY/);
+  room.players.host.location.lat=0; room.players.host.effects.frozenUntil=timestamp+5000;
+  await assert.rejects(applyAction(room,'guest',{action:'beginTask',kind:'closecall'},timestamp),/SEEKER_NOT_NEARBY/);
+  assert.equal(room.players.guest.closeCallUsed,undefined,'invalid attempts do not consume the task');
 });
 
 test('Seeker map restrictions spend dynamic points, display to Hiders, and block entry', async () => {
   const room=playing(),timestamp=Date.now(),tuning=tacticalTuning(room.settings); room.players.host.score=100;
-  const center={lat:0,lng:.001};
+  const center={lat:0,lng:.002};
   await applyAction(room,'host',{action:'useTacticalAbility',ability:'zone',center},timestamp);
   assert.equal(room.players.host.score,100-tuning.zoneCost);
   assert.equal(Object.keys(publicRoom(room,'guest',timestamp).restrictedZones).length,1);
@@ -173,12 +194,12 @@ test('Seeker map restrictions spend dynamic points, display to Hiders, and block
   assert.equal(room.players.guest.location.lng,0,'a rejected entry never overwrites the last accepted GPS point');
 });
 
-test('Sperrzonen accept selected radius and duration, show affected Hiders a private evacuation deadline, and charge by size', async () => {
+test('Sperrzonen persist to round end, show a private evacuation deadline and charge by size', async () => {
   const room=playing(),timestamp=Date.now(),tuning=tacticalTuning(room.settings); room.players.host.score=200;
   room.players.other.location={lat:0,lng:.004,accuracy:5,measuredAt:timestamp}; room.players.other.locationAt=timestamp;
   await applyAction(room,'host',{action:'useTacticalAbility',ability:'zone',center:{lat:0,lng:.001},radius:120,duration:90},timestamp);
   const zone=Object.values(room.restrictedZones)[0];
-  assert.equal(zone.radius,120); assert.equal(zone.expiresAt,timestamp+90000);
+  assert.equal(zone.radius,120); assert.equal(zone.expiresAt,room.matchEndsAt);
   assert.equal(room.players.guest.zoneEvacuations[zone.id].deadlineAt,timestamp+45000);
   assert.equal(room.players.other.zoneEvacuations,undefined);
   assert.equal(publicRoom(room,'guest',timestamp).players.guest.zoneEvacuations[zone.id].deadlineAt,timestamp+45000);
@@ -186,7 +207,9 @@ test('Sperrzonen accept selected radius and duration, show affected Hiders a pri
   assert.equal(room.players.host.score,200-tuning.zoneCostFor(120,90));
   const later=timestamp+91_000;
   await applyAction(room,'host',{action:'updatePlayerLocation',location:{lat:0,lng:0,accuracy:5,measuredAt:later-1}},later-1);
-  await assert.rejects(applyAction(room,'host',{action:'useTacticalAbility',ability:'zone',center:{lat:0,lng:.001},radius:tuning.maxZoneRadius+1,duration:90},later),/INVALID_ZONE_SETTINGS/);
+  await assert.rejects(applyAction(room,'host',{action:'useTacticalAbility',ability:'zone',center:{lat:0,lng:.001},radius:tuning.maxZoneRadius+1,duration:90},later),/ABILITY_COOLDOWN/);
+  room.players.host.tacticalCooldowns={};
+  await assert.rejects(applyAction(room,'host',{action:'useTacticalAbility',ability:'zone',center:{lat:0,lng:.001},radius:tuning.maxZoneRadius+1},later),/INVALID_ZONE_SETTINGS/);
 });
 
 test('a Hider who misses the restricted-zone evacuation deadline is eliminated and rewards its Seeker', async () => {
@@ -229,7 +252,7 @@ test('a Hider already inside a restricted circle can leave but cannot later re-e
   room.players.guest.location={...center,accuracy:5,measuredAt:timestamp}; room.players.guest.locationAt=timestamp;
   await applyAction(room,'host',{action:'useTacticalAbility',ability:'zone',center},timestamp);
   await applyAction(room,'guest',{action:'updatePlayerLocation',location:{lat:0,lng:.0011,accuracy:5,measuredAt:timestamp+1000}},timestamp+1000);
-  await applyAction(room,'guest',{action:'updatePlayerLocation',location:{lat:0,lng:.002,accuracy:5,measuredAt:timestamp+2000}},timestamp+2000);
+  await applyAction(room,'guest',{action:'updatePlayerLocation',location:{lat:0,lng:.003,accuracy:5,measuredAt:timestamp+2000}},timestamp+2000);
   await assert.rejects(applyAction(room,'guest',{action:'updatePlayerLocation',location:{...center,accuracy:5,measuredAt:timestamp+3000}},timestamp+3000),/RESTRICTED_AREA/);
 });
 
@@ -466,10 +489,10 @@ test('visit target is completed automatically by a fresh GPS arrival without a c
   await applyAction(room,'guest',{action:'updatePlayerLocation',location:{lat:.001,lng:0,accuracy:5,measuredAt:timestamp+1000}},timestamp+1000);
   assert.equal(room.players.guest.activeTask.completed,true);
   assert.equal(room.players.guest.activeTask.id,challenge.id);
-  assert.equal(room.players.guest.coins,before+25);
+  assert.equal(room.players.guest.coins,before+30);
   assert.equal(room.players.guest.tasksSolved,1);
   await applyAction(room,'guest',{action:'updatePlayerLocation',location:{lat:.001,lng:0,accuracy:5,measuredAt:timestamp+2000}},timestamp+2000);
-  assert.equal(room.players.guest.coins,before+25,'repeated GPS updates cannot duplicate the reward');
+  assert.equal(room.players.guest.coins,before+30,'repeated GPS updates cannot duplicate the reward');
 });
 
 test('stay tasks fail when the player leaves the registered hiding point', async () => {
@@ -491,7 +514,9 @@ test('round photo task only shares sanitized JPEG with seekers and erases it on 
   assert.equal(Object.keys(room.photoMetadata).length,1);
   assert.equal(publicRoom(room,'host',timestamp+1000).roundPhotos[0].image,undefined,'room polling returns photo metadata only');
   assert.equal(publicRoom(room,'guest',timestamp+1000).roundPhotos,undefined,'hider photos are not echoed to hiders');
-  await assert.rejects(applyAction(room,'guest',{action:'beginTask',kind:'photo'},timestamp+32000),/PHOTO_ALREADY_SUBMITTED/);
+  await assert.rejects(applyAction(room,'guest',{action:'beginTask',kind:'photo'},timestamp+32000),/TASK_ALREADY_ACTIVE/);
+  assert.equal(room.players.guest.activeTask.completed,false,'upload alone never pays a reward');
+  await assert.rejects(applyAction(room,'guest',{action:'submitPhoto',taskId:result.id,image},timestamp+2000),/PHOTO_ALREADY_SUBMITTED/);
   room.phase='finished';
   const finished=await applyAction(room,'host',{action:'advanceExpiredPhase'});
   assert.deepEqual(finished.room.photoMetadata,{});
