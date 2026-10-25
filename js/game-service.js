@@ -205,7 +205,7 @@ export async function requestCatch(code, seekerId, targetId) {
     if (room.phase !== 'playing' || !seeker || seeker.role !== 'seeker' || !seeker.active) return null;
     if (!target || target.role !== 'hider' || !target.active) return null;
     const timestamp=now();
-    if(!freshCatchLocation(seeker,timestamp) || !freshCatchLocation(target,timestamp) || distanceMeters(seeker.location,target.location)>5) return null;
+    if(!freshCatchLocation(seeker,timestamp) || !freshCatchLocation(target,timestamp) || distanceMeters(seeker.location,target.location)>catchDistanceLimit(seeker.location.accuracy,target.location.accuracy)) return null;
     if(!applyCatch(room,seekerId,targetId,timestamp)) return null;
     return room;
   });
@@ -264,8 +264,9 @@ export async function respondToCatch(code, targetId, accepted, requestId=null) {
 }
 
 function freshCatchLocation(player,timestamp) {
-  return Boolean(player.location && timestamp-(player.locationAt||0)<=10000 && timestamp>=player.locationAt && Number(player.location.accuracy)<=25);
+  return Boolean(player.location && timestamp-(player.locationAt||0)<=15000 && timestamp>=player.locationAt && Number(player.location.accuracy)<=60);
 }
+function catchDistanceLimit(firstAccuracy,secondAccuracy) { return Math.max(8,Math.min(30,(Number(firstAccuracy)+Number(secondAccuracy))/2)); }
 
 function awardPlayerHiderPoints(player,timestamp) {
   if (!player || player.role!=='hider' || !player.hiderStartedAt) return false;

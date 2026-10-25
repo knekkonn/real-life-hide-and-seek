@@ -1,0 +1,28 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { compressRoundPhoto } from '../js/photos.js';
+
+test('round photos are re-encoded smaller than the server upload limit, including large phone images', async () => {
+  const canvasSizes=[]; let closed=false;
+  const image={width:4032,height:3024,close(){closed=true;}};
+  const data=await compressRoundPhoto({type:'image/jpeg',size:15*1024*1024},{
+    bitmapFactory:async()=>image,
+    canvasFactory:()=>({
+      width:0,height:0,
+      getContext:()=>({drawImage(){}}),
+      toDataURL(type,quality){canvasSizes.push(Math.max(this.width,this.height));return `data:${type};base64,${'A'.repeat(this.width>320?26000:12000)}`;}
+    })
+  });
+  assert.ok(data.startsWith('data:image/jpeg;base64,'));
+  assert.ok(data.length<=24000);
+  assert.ok(canvasSizes.some(size=>size<=320),'retries at a smaller resolution if quality reduction is not enough');
+  assert.equal(closed,true,'decoded image memory is released');
+});
+
+test('round photo compression rejects unsupported or excessive source files before decoding', async () => {
+  let decoded=false;
+  const bitmapFactory=async()=>{decoded=true;return {width:1,height:1};};
+  await assert.rejects(compressRoundPhoto({type:'image/heic',size:100},{bitmapFactory}),/JPEG, PNG oder WebP/);
+  await assert.rejects(compressRoundPhoto({type:'image/jpeg',size:21*1024*1024},{bitmapFactory}),/unter 20 MB/);
+  assert.equal(decoded,false);
+});

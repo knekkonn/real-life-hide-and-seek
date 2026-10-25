@@ -1,4 +1,5 @@
 import { evaluateZone, makeLocationSample, validPoint } from './gps.js';
+import { compressRoundPhoto } from './photos.js';
 import { initBackend, getBackendMode, getPlayerUid, createRoom, getRoom, mutateRoom, subscribeRoom, subscribeConnection, workerCommand, fetchRoundPhoto } from './backend.js';
 import { MAX_PLAYERS, MIN_PLAYERS } from './config.js';
 import { SKILLS, SKILL_IDS, DEFAULT_SETTINGS, skillTuning } from './skills.js';
@@ -7,7 +8,7 @@ import {
   maybePayTimeReward, updatePlayerLocation, requestCatch, buySkill,
   activateSkill, collectItemBox, completeTask, leaveRoom
 } from './game-service.js';
-import { updateLobbyMap, resetLobbyMap, initMap, updateMap, centerMap, invalidateMapSize, resetMap, drawRoundTracks, clearRoundTracks } from './map.js';
+import { updateLobbyMap, resetLobbyMap, initMap, updateMap, centerMap, invalidateMapSize, resetMap, drawRoundTracks, clearRoundTracks, beginMapPlacement, cancelMapPlacement } from './map.js';
 import { clamp, now, formatTime, escapeHTML, randomCode, distanceMeters, Sound, haptic, setSoundEnabled } from './utils.js';
 
 const $ = (id) => document.getElementById(id);
@@ -150,11 +151,28 @@ async function startApp() {
   document.querySelectorAll('[data-skill]').forEach((input) => input.addEventListener('change', () => saveSettings({ skills:{ [input.dataset.skill]:input.checked } })));
   $('announcementsToggle').addEventListener('change', (event) => saveSettings({ announcements:event.target.checked }));
   $('seekerCount').addEventListener('change', (event) => saveSettings({ seekerCount:Number(event.target.value) }));
-  document.querySelectorAll('.game-tab').forEach((button) => button.addEventListener('click', () => selectTab(button.dataset.tab)));
+  const gameTabs=[...document.querySelectorAll('.game-tab')];
+  gameTabs.forEach((button) => button.addEventListener('click', () => selectTab(button.dataset.tab)));
+  document.querySelectorAll('.tab-content').forEach((panel) => {
+    let touchStart=null;
+    panel.addEventListener('touchstart',(event)=>{
+      const touch=event.touches?.[0];
+      touchStart=event.touches?.length===1&&!event.target.closest('button,a,input,select,textarea')&&touch?{x:touch.clientX,y:touch.clientY}:null;
+    },{passive:true});
+    panel.addEventListener('touchend',(event)=>{
+      if(!touchStart) return;
+      const touch=event.changedTouches?.[0],dx=touch?touch.clientX-touchStart.x:0,dy=touch?touch.clientY-touchStart.y:0;
+      touchStart=null;
+      if(Math.abs(dx)<75||Math.abs(dx)<Math.abs(dy)*1.3) return;
+      const current=gameTabs.findIndex((button)=>button.dataset.tab===document.querySelector('.tab-content.active')?.id);
+      const next=Math.max(0,Math.min(gameTabs.length-1,current+(dx<0?1:-1)));
+      if(next!==current) selectTab(gameTabs[next].dataset.tab);
+    },{passive:true});
+  });
   window.addEventListener('unhandledrejection', (event) => { event.preventDefault(); toast('Aktion nicht bestätigt', event.reason?.message || 'Bitte Verbindung prüfen und erneut versuchen.', 'danger'); });
   window.addEventListener('online', async () => { try { await initBackend(); bindConnection(); if (!state.roomCode) await restoreSession(); } catch (error) { toast('Verbindung fehlgeschlagen',error.message,'warn'); } });
   window.addEventListener('offline', () => { state.connected=false; state.zone=null; if(state.ownLocation) state.gpsSyncStatus='offline'; setConnectionBadge(); if(state.room&&state.room.phase!=='lobby') updateMap(state.room,state.uid,state.ownLocation||getSelf()?.location,currentRole(),state.gpsSyncStatus); });
-  window.addEventListener('keydown', (event) => { if (event.key === 'Escape' && state.modalCloseable && !$('modalRoot').classList.contains('hidden')) closeModal(); });
+  window.addEventListener('keydown', (event) => { if (event.key === 'Escape') { cancelMapPlacement(); if(state.modalCloseable && !$('modalRoot').classList.contains('hidden')) closeModal(); } });
   bindConnection();
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
     let reloadForWorkerUpdate = false;
@@ -802,16 +820,40 @@ function handleEffects(room) {
 function openCatchPicker() {
   const candidates = activePlayers().filter((player) => player.role === 'hider' && player.id !== state.uid);
   if (!candidates.length) { toast('Keine Hider verfügbar', 'Alle Hider wurden bereits gefangen oder sind nicht aktiv.', 'warn'); return; }
-  openModal({ kicker:'TARGET ACQUISITION', title:'Hider gefangen melden', body:`<p class="modal-copy">Wähle den Hider, den du gerade tatsächlich berührt hast. Der Fang wird sofort registriert, wenn beide Geräte frisches GPS melden und höchstens 5 m auseinanderliegen. Der Hider muss nichts bestätigen.</p><div class="modal-option-list">${candidates.map((player) => `<button type="button" class="modal-option" data-catch-target="${escapeHTML(player.id)}"><span class="player-avatar">${escapeHTML(player.name.slice(0,1).toUpperCase())}</span><span><strong>${displayName(player)}</strong><small>Ausgewählte Begegnung</small></span></button>`).join('')}</div><div class="safety-copy">GPS allein beweist keinen Fang. Nur bei tatsächlicher Berührung melden und in öffentlichen, sicheren Bereichen spielen.</div>`, actions:[{label:'Abbrechen',variant:'button-secondary'}] });
+  openModal({ kicker:'TARGET ACQUISITION', title:'Hider gefangen melden', body:`<p class="modal-copy">Wähle den Hider, den du gerade tatsächlich berührt hast. Beide Geräte brauchen eine höchstens 15 Sekunden alte GPS-Messung mit maximal 60 m Ungenauigkeit. Der erlaubte Abstand richtet sich nach der GPS-Genauigkeit (8–30 m). Der Fang wird sofort registriert; der Hider muss nichts bestätigen.</p><div class="modal-option-list">${candidates.map((player) => `<button type="button" class="modal-option" data-catch-target="${escapeHTML(player.id)}"><span class="player-avatar">${escapeHTML(player.name.slice(0,1).toUpperCase())}</span><span><strong>${displayName(player)}</strong><small>Ausgewählte Begegnung</small></span></button>`).join('')}</div><div class="safety-copy">GPS allein beweist keinen Fang. Nur bei tatsächlicher Berührung melden und in öffentlichen, sicheren Bereichen spielen.</div>`, actions:[{label:'Abbrechen',variant:'button-secondary'}] });
   $('modalBody').querySelectorAll('[data-catch-target]').forEach((button) => button.addEventListener('click', async () => {
     const targetId = button.dataset.catchTarget;
     closeModal();
     let result;
-    try { result=await requestCatch(state.roomCode,state.uid,targetId); }
-    catch(error) { toast('Fang nicht ausgeführt',error.message,'warn'); return; }
+    try {
+      const location=await getFreshCatchLocation();
+      state.ownLocation=location;
+      state.gpsSyncStatus='syncing';
+      await updatePlayerLocation(state.roomCode,state.uid,location);
+      state.lastLocationWrite=now();
+      state.gpsSyncStatus='synced';
+      result=await requestCatch(state.roomCode,state.uid,targetId);
+    }
+    catch(error) {
+      const message=error?.message==='FRESH_GPS_REQUIRED'?'GPS beider Spieler muss aktiv sein; Messungen dürfen höchstens 15 Sekunden alt und maximal 60 m ungenau sein. Bitte GPS aktivieren und erneut versuchen.':error?.message==='CATCH_RANGE_REQUIRED'?'GPS liegt außerhalb des Genauigkeitsbereichs. Geht näher zusammen und versucht es erneut.':error?.message||'Bitte GPS aktivieren und erneut versuchen.';
+      toast('Fang nicht ausgeführt',message,'warn'); return;
+    }
     if (result) { Sound.alert(); toast('Fang ausgeführt', 'Der Fang wurde sofort registriert. Ein aktiver Schild kann ihn abwehren.', 'success'); }
     else toast('Fang nicht ausgeführt', 'Spielerstatus, frische GPS-Messungen und Nähe prüfen. Ein Hider muss nichts bestätigen.', 'warn');
   }));
+}
+
+function getFreshCatchLocation() {
+  const current=state.ownLocation;
+  if(current&&now()-current.measuredAt<=10000&&current.accuracy<=60) return Promise.resolve(current);
+  if(!navigator.geolocation) return Promise.reject(new Error('GPS ist auf diesem Gerät nicht verfügbar.'));
+  return new Promise((resolve,reject)=>navigator.geolocation.getCurrentPosition(position=>{
+    try {
+      const location=makeLocationSample(position,now());
+      if(location.accuracy>60) throw new Error('GPS ist noch zu ungenau. Bitte kurz warten und erneut versuchen.');
+      resolve(location);
+    } catch(error) { reject(error); }
+  },error=>reject(new Error(error?.code===1?'Erlaube GPS im Browser für den Fang.':'GPS ist gerade nicht verfügbar. Bitte erneut versuchen.')),{enableHighAccuracy:true,timeout:15000,maximumAge:1500}));
 }
 
 function openSkillPicker() {
@@ -836,19 +878,19 @@ async function useSkillFromInventory(skillId=null, index=null) {
 }
 
 function startDecoyPlacement() {
-  const location = state.ownLocation || getSelf()?.location;
-  const defaultPoint = location ? { lat:(location.lat + 0.0005).toFixed(6), lng:(location.lng + 0.0005).toFixed(6) } : { lat:'',lng:'' };
-  openModal({ kicker:'DECOY PING / 30 SEC', title:'Täusch-Marker platzieren', body:`<p class="modal-copy">Setze einen Fake-Marker an einer beliebigen Koordinate. Du kannst die Karte auf einen Ort tippen und dessen Koordinaten hier einsetzen.</p><label class="modal-field-label" for="decoyLat">Breitengrad (Latitude)</label><input class="modal-input" id="decoyLat" type="number" step="any" placeholder="52.520000" value="${defaultPoint.lat}"><label class="modal-field-label" for="decoyLng">Längengrad (Longitude)</label><input class="modal-input" id="decoyLng" type="number" step="any" placeholder="13.405000" value="${defaultPoint.lng}"><p class="puzzle-hint">Beispiel: 52.5200 / 13.4050. Der Marker verschwindet nach 30 Sekunden.</p>`, actions:[
-    {label:'Abbrechen',variant:'button-secondary'},
-    {label:'Marker setzen',variant:'button-primary',keepOpen:true,onClick:async()=>{
-      const latText = $('decoyLat')?.value?.trim() || ''; const lngText = $('decoyLng')?.value?.trim() || '';
-      const lat = Number(latText); const lng = Number(lngText);
-      if (!latText || !lngText || !Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat)>90 || Math.abs(lng)>180) { toast('Koordinaten prüfen', 'Bitte gültige GPS-Koordinaten eingeben.', 'warn'); return; }
-      const result = await activateSkill(state.roomCode,state.uid,'decoy',{location:{lat,lng}});
-      if (result.ok) { closeModal(); Sound.success(); toast('Täusch-Marker platziert', 'Der Marker ist 30 Sekunden lang sichtbar.', 'success'); }
-      else toast('Täusch-Ping fehlgeschlagen', result.reason, 'warn');
-    }}
-  ]});
+  closeModal();
+  selectTab('mapTab');
+  if (!beginMapPlacement(async (point) => {
+    const center=state.room?.settings?.center;
+    const maxRange=Math.min(Number(state.room?.settings?.radius)||500,skillTuning('decoy',state.room?.settings?.radius).decoyRange);
+    if (!center || distanceMeters(point,center)>maxRange) { toast('Zu weit entfernt','Tippe innerhalb des markierten Spielfeldbereichs auf die Karte.','warn'); startDecoyPlacement(); return; }
+    try {
+      const result=await activateSkill(state.roomCode,state.uid,'decoy',{location:point});
+      if (result.ok) { Sound.success(); haptic([20,25,20]); toast('Täusch-Marker platziert','Der Marker ist 30 Sekunden lang sichtbar.','success'); }
+      else toast('Täusch-Ping fehlgeschlagen',result.reason,'warn');
+    } catch(error) { toast('Täusch-Ping fehlgeschlagen',error.message||'Verbindung prüfen.','warn'); }
+  })) { toast('Karte nicht bereit','Öffne zuerst die Spielkarte und versuche es erneut.','warn'); return; }
+  toast('Platzierung aktiv','Tippe oder klicke auf einen sicheren Ort innerhalb der Zone.','info',5000);
 }
 
 async function startTask(kind) {
@@ -857,9 +899,15 @@ async function startTask(kind) {
   try {
     const challenge=(await workerCommand(state.roomCode,'beginTask',{kind})).result;
     state.activeTaskId=challenge.id;
+    if(kind==='visit') {
+      selectTab('mapTab');
+      if(challenge.targetLocation) centerMap(challenge.targetLocation);
+      toast('Zielpunkt markiert','Gehe zum leuchtenden Zielmarker. Die Aufgabe wird automatisch abgeschlossen, sobald dein aktuelles GPS dich innerhalb von 20 m erkennt.','info',6500);
+      return;
+    }
     const escapedPrompt=escapeHTML(challenge.prompt || 'Finde den Zielpunkt auf der Karte.');
     const body=kind==='cipher'
-      ? `<p class="modal-copy">${escapedPrompt}</p><label class="modal-field-label" for="taskAnswer">6-Buchstaben-Klartext</label><input id="taskAnswer" class="modal-input" autocomplete="off" maxlength="6" minlength="6" autocapitalize="characters" spellcheck="false" aria-label="6-Buchstaben-Klartext"><p>Falsche oder zu schnelle Antworten beenden den Versuch und starten den Cooldown.</p>`
+      ? `<p class="modal-copy">${escapedPrompt}</p><label class="modal-field-label" for="taskAnswer">3-stelliger Tresorcode</label><input id="taskAnswer" class="modal-input" type="text" inputmode="numeric" pattern="[0-9]{3}" autocomplete="off" maxlength="3" minlength="3" autocapitalize="off" spellcheck="false" placeholder="000" aria-label="3-stelliger Tresorcode"><p>Der Code nutzt drei verschiedene Ziffern. Eine falsche Antwort beendet den Versuch und startet den Cooldown.</p>`
       : kind==='scan'
       ? `<p class="modal-copy">Gehe zu dem sicheren, öffentlichen Signal Cache, den der Server für dich ausgewählt hat. Er wird auf deiner Karte markiert. Nähe unter 20 m erforderlich.</p><p id="scanTaskStatus">Cache-Scan läuft · 120 Sekunden</p>`
       : kind==='proximity'
@@ -869,17 +917,19 @@ async function startTask(kind) {
       : kind==='photo'
       ? `<p class="modal-copy">Fotografiere dein Versteck, ohne andere Personen aufzunehmen. Das Bild wird im Browser verkleinert und ohne EXIF-Daten an die Runde übertragen. Es ist für das Suchteam sichtbar und wird beim Rundenende gelöscht.</p><label class="modal-field-label" for="taskPhoto">Kamera oder Bild auswählen</label><input id="taskPhoto" class="modal-input" type="file" accept="image/jpeg,image/png,image/webp" capture="environment"><p>Nur ein kleines JPEG wird übertragen. Das Bild bleibt auf die laufende Runde beschränkt.</p>`
       : `<p class="modal-copy">Halte deinen Standort 60 Sekunden lang innerhalb von 15 m. GPS-Lücken über 10 Sekunden, zu ungenaue Messungen oder Bewegung beenden den Versuch.</p><p id="stayTaskStatus">Verbleibende Zeit: 60 s</p>`;
-    const titles={cipher:'Vigenère-Code knacken',visit:'Geheimer Zielpunkt',photo:'Versteck fotografieren',stay:'Versteck halten',scan:'Signal Cache scannen',proximity:'Hider-Signal aufspüren'};
+    const titles={cipher:'Tresorcode knacken',visit:'Geheimer Zielpunkt',photo:'Versteck fotografieren',stay:'Versteck halten',scan:'Signal Cache scannen',proximity:'Hider-Signal aufspüren'};
     openModal({kicker:'FIELD CHALLENGE',title:titles[kind]||'Feldaufgabe',body,closeable:['scan','proximity'].includes(kind),actions:[
       {label:'Abbrechen',variant:'button-secondary',onClick:async()=>{ await workerCommand(state.roomCode,'failTask',{taskId:challenge.id}); clearInterval(state.taskProgressTimer); }},
       ...(kind==='cipher'?[{label:'Antwort prüfen',variant:'button-primary',keepOpen:true,onClick:async()=>{
-        await completeTask(state.roomCode,state.uid,'code',{id:challenge.id,answer:$('taskAnswer').value});
+        const answer=$('taskAnswer').value.trim();
+        if(!/^\d{3}$/.test(answer)) { toast('Code prüfen','Gib genau drei Ziffern ein.','warn'); return; }
+        await completeTask(state.roomCode,state.uid,'code',{id:challenge.id,answer});
         closeModal(); toast('Aufgabe geschafft','Belohnung wurde gutgeschrieben.','success');
       }}]:['visit','scan','proximity'].includes(kind)?[{label:kind==='scan'?'Cache scannen':kind==='proximity'?'Nähe bestätigen':'Ich bin am Ziel',variant:'button-primary',keepOpen:true,onClick:async()=>{
         await completeTask(state.roomCode,state.uid,kind,{id:challenge.id}); closeModal(); toast('Aufgabe geschafft','Belohnung wurde gutgeschrieben.','success');
       }}]:kind==='photo'?[{label:'Foto senden',variant:'button-primary',keepOpen:true,onClick:async()=>{
         const file=$('taskPhoto')?.files?.[0]; if(!file) { toast('Foto fehlt','Nimm ein Foto auf oder wähle ein Bild aus.','warn'); return; }
-        const image=await compressPhoto(file);
+        const image=await compressRoundPhoto(file);
         await workerCommand(state.roomCode,'submitPhoto',{taskId:challenge.id,image});
         closeModal(); toast('Foto für die Runde gespeichert','Das Suchteam kann es bis zum Rundenende sehen.','success');
       }}]:[{label:'60 Sekunden gehalten',variant:'button-primary',keepOpen:true,onClick:async()=>{
@@ -893,17 +943,6 @@ async function startTask(kind) {
       $('modalActions').querySelector('.button-primary').disabled=left>0;
     },500);
   } catch(error) { toast('Aufgabe fehlgeschlagen',error.message,'warn'); }
-}
-async function compressPhoto(file) {
-  if(!['image/jpeg','image/png','image/webp'].includes(file.type) || file.size>8*1024*1024) throw new Error('Bitte wähle ein JPEG, PNG oder WebP unter 8 MB.');
-  const bitmap=await createImageBitmap(file);
-  try {
-    const scale=Math.min(1,320/bitmap.width,240/bitmap.height);
-    const canvas=document.createElement('canvas'); canvas.width=Math.max(1,Math.round(bitmap.width*scale)); canvas.height=Math.max(1,Math.round(bitmap.height*scale));
-    canvas.getContext('2d',{alpha:false}).drawImage(bitmap,0,0,canvas.width,canvas.height);
-    for(let quality=.58;quality>=.28;quality-=.06) { const data=canvas.toDataURL('image/jpeg',quality); if(data.length<=25000) return data; }
-    throw new Error('Das Bild ist zu groß. Bitte ein kleineres Bild aufnehmen.');
-  } finally { bitmap.close?.(); }
 }
 async function startNewRound() {
   if (!isHost()) { toast('Host erforderlich','Nur der Host kann die nächste Runde starten.','warn'); return; }
