@@ -11,7 +11,7 @@ import {
   activateSkill, collectItemBox, completeTask, leaveRoom
 } from './game-service.js';
 import { updateLobbyMap, resetLobbyMap, initMap, updateMap, centerMap, invalidateMapSize, resetMap, drawRoundTracks, clearRoundTracks, beginMapPlacement, cancelMapPlacement } from './map.js';
-import { clamp, now, formatTime, escapeHTML, randomCode, distanceMeters, Sound, haptic, setSoundEnabled, setMusicEnabled, getMusicPreference } from './utils.js';
+import { clamp, now, formatTime, escapeHTML, randomCode, distanceMeters, Sound, haptic, setSoundEnabled } from './utils.js';
 
 const $ = (id) => document.getElementById(id);
 const state = {
@@ -19,7 +19,7 @@ const state = {
   ownLocation:null, watchId:null, gpsPending:false, gpsSyncStatus:'idle', lastLocationWrite:0,
   lastAnnouncementId:null, lastSeekerSideAnnouncementId:null, subscriptionStartedAt:0, seenCatchRequest:null,
   revealDismissedPhase:null, lastCountdownSecond:null, currentTab:'mapTab', lastCelebratedRoundId:null, lastTracksRoundId:null,
-  audioOn:true, musicOn:false, musicResumePending:false, tickHandle:null, passiveRewardAt:0, shakeHandler:null, shakeTimer:null,
+  audioOn:true, tickHandle:null, passiveRewardAt:0, shakeHandler:null, shakeTimer:null,
   shakeCount:0, shakeTarget:10, challengeDone:false, pendingTimer:null,
   roundPhotoUrls:new Map(), roundPhotoLoads:new Set(), roundPhotoFailures:new Map()
 };
@@ -280,7 +280,7 @@ function avatarCosmetic(player) { return COSMETIC_IDS.includes(player?.cosmeticI
 
 function syncAudioControls() {
   const sound = $('soundToggle');
-  const music = $('musicToggle');
+
   if (sound) {
     sound.setAttribute('aria-pressed', String(state.audioOn));
     sound.setAttribute('aria-label', state.audioOn ? 'Soundeffekte ausschalten' : 'Soundeffekte einschalten');
@@ -288,21 +288,12 @@ function syncAudioControls() {
     sound.classList.toggle('is-muted', !state.audioOn);
     $('soundIcon').textContent = state.audioOn ? '♫' : '♪̸';
   }
-  if (music) {
-    music.setAttribute('aria-pressed', String(state.musicOn));
-    const label = state.musicOn ? 'Hintergrundmusik ausschalten' : state.musicResumePending ? 'Hintergrundmusik fortsetzen' : 'Hintergrundmusik einschalten';
-    music.setAttribute('aria-label', label);
-    music.title = label;
-    music.classList.toggle('is-muted', !state.musicOn);
-    $('musicIcon').textContent = state.musicOn ? '♫' : '♪';
-  }
 }
 
 async function startApp() {
   try { await initBackend(); }
   catch (error) { console.warn(error); toast('Firebase nicht verbunden', error.message + ' Erstellen oder Beitreten versucht die Verbindung erneut.', 'danger', 8000); }
   setConnectionBadge();
-  state.musicResumePending = getMusicPreference();
   syncAudioControls();
   await refreshAccountPanel();
   $('soundToggle').addEventListener('click', () => {
@@ -311,20 +302,6 @@ async function startApp() {
     syncAudioControls();
     if (state.audioOn) Sound.click();
     toast('Audio', state.audioOn ? 'Soundeffekte aktiviert.' : 'Soundeffekte deaktiviert.', 'info', 1800);
-  });
-  $('musicToggle').addEventListener('click', async () => {
-    const enable = !state.musicOn;
-    $('musicToggle').disabled = true;
-    let enabled = false;
-    try { enabled = await setMusicEnabled(enable); }
-    catch { await setMusicEnabled(false); }
-    state.musicOn = enabled;
-    state.musicResumePending = false;
-    $('musicToggle').disabled = false;
-    syncAudioControls();
-    if (enable && enabled) toast('Ambient-Musik läuft', 'Eigene, leise Hintergrundmusik. Sie pausiert, wenn du die App verlässt.', 'info', 3200);
-    else if (enable) toast('Musik nicht verfügbar', 'Dieser Browser unterstützt die Audioausgabe gerade nicht. Soundeffekte bleiben separat steuerbar.', 'warn', 4200);
-    else toast('Hintergrundmusik aus', 'Soundeffekte und Musik lassen sich getrennt steuern.', 'info', 2200);
   });
   setSoundEnabled(state.audioOn);
   $('entryForm').addEventListener('submit', (event) => event.preventDefault());
