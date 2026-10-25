@@ -3,6 +3,7 @@ import { escapeHTML, now, distanceMeters, bearingDegrees, formatTime } from './u
 
 let map = null;
 let radiusCircle = null;
+let restrictedCircles = new Map();
 let centerMarker = null;
 let mapMarkers = new Map();
 let lastDrawKey = '';
@@ -157,6 +158,7 @@ export function updateMap(room, selfId, ownLocation, role, gpsSyncStatus='idle')
   const jammerActive = (room.effects?.jammerUntil || 0) > now();
   const seekerRadarActive = (myEffects.seekerradarUntil || 0) > now() && !jammerActive;
   const publicDecoys = Object.values(room.decoys || {}).filter((decoy) => (decoy.expiresAt || 0) > now());
+  const restrictedZones=Object.values(room.restrictedZones||{}).filter(zone=>zone.expiresAt>now()&&zone.center&&Number.isFinite(zone.radius));
   const traps = Object.values(room.traps || {}).filter((trap) => (trap.expiresAt || 0) > now());
   const itemBoxes = Object.values(room.itemBoxes || {}).filter((box) => !box.collected);
 
@@ -213,6 +215,16 @@ export function updateMap(room, selfId, ownLocation, role, gpsSyncStatus='idle')
     const level=Number.isFinite(box.level)?`Etage ${box.level>0?'+':''}${box.level}`:Number.isFinite(box.layer)&&box.layer!==0?`Ebene ${box.layer>0?'+':''}${box.layer}`:'';
     putMarker(id, box.location, 'cache', 'Signal Cache', `Itembox · Nähe erforderlich${level?` · ${level}`:''}`);
   }
+  const liveRestrictions=new Set();
+  for(const zone of restrictedZones) {
+    liveRestrictions.add(zone.id);
+    let circle=restrictedCircles.get(zone.id);
+    if(!circle) {
+      circle=L.circle([zone.center.lat,zone.center.lng],{radius:zone.radius,color:'#ff637e',weight:2,opacity:.9,fillColor:'#ff637e',fillOpacity:.14,dashArray:'6 5',interactive:false}).addTo(map);
+      restrictedCircles.set(zone.id,circle);
+    } else circle.setLatLng([zone.center.lat,zone.center.lng]).setRadius(zone.radius);
+  }
+  for(const [id,circle] of restrictedCircles) if(!liveRestrictions.has(id)) { map.removeLayer(circle); restrictedCircles.delete(id); }
   for (const [id, marker] of mapMarkers.entries()) {
     if (!allowed.has(id)) { map.removeLayer(marker); mapMarkers.delete(id); }
   }
@@ -232,6 +244,8 @@ export function resetMap() {
   cancelMapPlacement();
   for (const marker of mapMarkers.values()) map.removeLayer(marker);
   mapMarkers.clear();
+  for(const circle of restrictedCircles.values()) map.removeLayer(circle);
+  restrictedCircles.clear();
   if (radiusCircle) map.removeLayer(radiusCircle);
   if (centerMarker) map.removeLayer(centerMarker);
   if (userCircle) map.removeLayer(userCircle);

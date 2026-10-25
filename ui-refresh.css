@@ -151,3 +151,14 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
   .task-card, .shop-item, .quick-action, .mode-card, .audio-controls .icon-button { transition: none; }
   .task-card:hover, .shop-item:hover, .quick-action:hover, .mode-card:hover { transform: none; }
 }
+/* Tactical ability status panels and map legend for server-enforced zones. */
+.restricted-dot{background:#ff637e!important;box-shadow:0 0 8px rgba(255,99,126,.75)}
+.relocation-notice{display:flex;flex-direction:column;gap:6px;margin:10px 0 0;padding:12px 15px;border:1px solid rgba(255,99,126,.48);border-radius:10px;background:rgba(255,99,126,.09);color:#ffd8de;font-size:11px;line-height:1.5}
+.relocation-notice strong{font:700 10px var(--font-mono);letter-spacing:.08em;color:#ff8295}
+.relocation-notice span{color:#d4dce5}
+.relocation-progress{height:4px;overflow:hidden;border-radius:4px;background:rgba(255,255,255,.1)}
+.relocation-progress i{display:block;height:100%;border-radius:inherit;background:#ff637e;transition:width .35s ease}
+.proximity-notice{border-color:rgba(73,215,255,.45);background:rgba(73,215,255,.07)}
+.proximity-notice strong{color:#49d7ff}
+.proximity-notice .relocation-progress i{background:#49d7ff}
+.skill-lab-restriction{position:absolute;z-index:1;border:2px dashed rgba(255,99,126,.9);border-radius:50%;background:rgba(255,99,126,.12);pointer-events:none;box-shadow:0 0 18px rgba(255,99,126,.2)}

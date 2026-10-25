@@ -3,7 +3,7 @@ import { normalizeRoom } from '../js/transactions.js';
 import { evaluateZone, validPoint } from '../js/gps.js';
 import { distanceMeters, bearingDegrees, destinationPoint } from '../js/utils.js';
 import { findSafeItemLocations } from './itembox.js';
-import { skillTuning } from '../js/skills.js';
+import { skillTuning, tacticalTuning } from '../js/skills.js';
 import { COSMETIC_IDS } from '../js/profile.js';
 
 export function publicRoom(source, uid, timestamp=Date.now()) {
@@ -14,6 +14,7 @@ export function publicRoom(source, uid, timestamp=Date.now()) {
   }
   delete room.challenges;
   delete room.objectives;
+  room.restrictedZones=Object.fromEntries(Object.entries(room.restrictedZones||{}).filter(([,zone])=>zone.expiresAt>timestamp).map(([id,zone])=>{const {allowedInside,...publicZone}=zone;return [id,publicZone];}));
   const photos = room.photoMetadata || {};
   delete room.photoMetadata;
   if (self.role === 'seeker' && room.phase === 'playing') {
@@ -45,7 +46,7 @@ export function publicRoom(source, uid, timestamp=Date.now()) {
       player.location = {lat:Math.round(player.location.lat*1000)/1000,lng:Math.round(player.location.lng*1000)/1000};
     }
     // Public score/role remain visible; private inventory, effects and zone evidence do not.
-    delete player.inventory; delete player.effects; delete player.zone; delete player.previousStatus; delete player.activeTask; delete player.taskCooldownUntil;
+    delete player.inventory; delete player.effects; delete player.zone; delete player.previousStatus; delete player.activeTask; delete player.taskCooldownUntil; delete player.forcedRelocation; delete player.tacticalCooldowns; delete player.timeExchangesUsed;
     delete player._stayAnchor; delete player.stationarySince; delete player.rewardAt; delete player.hiderStartedAt;
     if (player.id === uid) { /* own task and cooldown remain private to the requesting player */ }
   }
@@ -96,7 +97,7 @@ function makeLogicCodePuzzle() {
 
 export async function applyAction(source, uid, input, timestamp=Date.now()) {
   const room = normalizeRoom(source);
-  const context = {room};
+  const context = {room,timestamp};
   const action = input.action;
   if (action === 'join') {
     if (!validName(input.name)) throw new Error('INVALID_NAME');
@@ -115,15 +116,16 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
   const player = member(room,uid);
   if(room.phase==='playing') game.awardElapsedHiderPoints(room,Math.min(timestamp,Number(room.matchEndsAt)||timestamp));
   if (room.phase === 'playing' && (player.effects?.frozenUntil || 0)>timestamp && !['updatePlayerLocation','leaveRoom'].includes(action)) throw new Error('FROZEN');
+  if (room.phase === 'playing' && player.role==='hider' && player.forcedRelocation && !['updatePlayerLocation','leaveRoom'].includes(action)) throw new Error('RELOCATION_REQUIRED');
   if (room.phase === 'closed' && action !== 'leaveRoom') throw new Error('LOBBY_CLOSED');
   if (action === 'newRound') {
     host(room,uid); if (room.phase !== 'finished') throw new Error('ROUND_NOT_FINISHED');
     room.phase='lobby'; room.phaseEndsAt=null; room.matchEndsAt=null; room.pendingCatch=null; room.announcement=null; room.winner=null;
-    room.challenges={}; room.itemBoxes={}; room.objectives={}; room.traps={}; room.decoys={}; room.effects={}; room.photoMetadata={}; room.roundTracks={};
+    room.challenges={}; room.itemBoxes={}; room.objectives={}; room.traps={}; room.decoys={}; room.effects={}; room.restrictedZones={}; room.photoMetadata={}; room.roundTracks={};
     for (const [id,p] of Object.entries(room.players)) if (!p.active || p.status==='left') delete room.players[id];
     room.roundId=crypto.randomUUID();
     room.roundResults=[]; room.roundAchievements=[];
-    for (const p of Object.values(room.players)) { p.active=true; p.role='waiting'; p.status='waiting'; p.coins=0; p.score=0; p.hidersFound=0; p.skillsUsed=0; p.longestStaySeconds=0; p.hiddenSeconds=0; p.stationarySince=0; p._stayAnchor=null; p.hiderStartedAt=0; p.rewardAt=timestamp; p.inventory=[]; p.effects={}; p.location=null; p.locationAt=0; p.activeTask=null; p.taskCooldownUntil=0; p.foundItems=0; p.tasksSolved=0; p.zone={violations:0}; }
+    for (const p of Object.values(room.players)) { p.active=true; p.role='waiting'; p.status='waiting'; p.coins=0; p.score=0; p.hidersFound=0; p.skillsUsed=0; p.longestStaySeconds=0; p.hiddenSeconds=0; p.stationarySince=0; p._stayAnchor=null; p.hiderStartedAt=0; p.rewardAt=timestamp; p.inventory=[]; p.effects={}; p.location=null; p.locationAt=0; p.activeTask=null; p.taskCooldownUntil=0; p.foundItems=0; p.tasksSolved=0; p.zone={violations:0}; p.forcedRelocation=null; p.tacticalCooldowns={}; p.timeExchangesUsed=0; }
     return {room,result:true};
   }
   if (action === 'settings') { host(room,uid); return {room:game.updateSettings(room,uid,input.patch || {}),result:true}; }
@@ -146,6 +148,13 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
     case 'updatePlayerLocation': {
       const location = input.location;
       if (!validPoint(location) || !Number.isFinite(location.accuracy) || location.accuracy<=0 || !Number.isFinite(location.measuredAt) || Math.abs(timestamp-location.measuredAt)>10000) throw new Error('INVALID_GPS');
+      if(room.phase==='playing' && player.role==='hider') {
+        for(const zone of Object.values(room.restrictedZones||{})) {
+          if(zone.expiresAt<=timestamp || distanceMeters(location,zone.center)>zone.radius) continue;
+          const mayRemainInside=(zone.allowedInside||[]).includes(uid)&&freshAccurate(player,timestamp)&&distanceMeters(player.location,zone.center)<=zone.radius;
+          if(!mayRemainInside) throw new Error('RESTRICTED_AREA');
+        }
+      }
       let previous = player.zone;
       if (timestamp - (player.locationAt || 0) > 10000) previous = null;
       const zone = evaluateZone(previous,{location:{...location,measuredAt:timestamp},center:room.settings.center,radius:room.settings.radius,connected:true,timestamp});
@@ -167,6 +176,11 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
         else if (task.kind==='proximity' && hasNearbyHider(room,uid,location,timestamp,10)) task.arrivedAt=timestamp;
       }
       await game.updatePlayerLocation(context,uid,{...location,measuredAt:timestamp});
+      if(player.role==='hider') for(const zone of Object.values(room.restrictedZones||{})) if(distanceMeters(player.location,zone.center)>zone.radius) zone.allowedInside=(zone.allowedInside||[]).filter(id=>id!==uid);
+      if(player.forcedRelocation && distanceMeters(player.location,player.forcedRelocation.from)>=player.forcedRelocation.minimumMeters) {
+        player.forcedRelocation=null;
+        room.announcement={id:crypto.randomUUID(),type:'private',targetId:uid,title:'RELOCATION_COMPLETE',message:'Mindestabstand erreicht. Du kannst wieder Fähigkeiten und Aufgaben einsetzen.',createdAt:timestamp};
+      }
       if(autoCompleteVisit && player.activeTask && !player.activeTask.completed && !player.activeTask.failed) {
         player.activeTask.completed=true; player.activeTask.completedAt=timestamp; player.taskCooldownUntil=timestamp+30000;
         result=await game.completeTask(context,uid,'visit');
@@ -182,11 +196,25 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
     }
     case 'buySkill': result=await game.buySkill(context,uid,input.skillId); break;
     case 'activateSkill': {
-      if (input.skillId === 'decoy' && (!validPoint(input.params?.location) || distanceMeters(input.params.location,room.settings.center) > skillTuning('decoy',room.settings.radius).decoyRange)) throw new Error('INVALID_POINT');
-      if (['tracker','compass','trap','sweeper'].includes(input.skillId) && timestamp-(player.locationAt || 0)>10000) throw new Error('FRESH_GPS_REQUIRED');
+      if (input.skillId === 'decoy' && (!validPoint(input.params?.location) || distanceMeters(input.params.location,room.settings.center) > skillTuning('decoy',room.settings).decoyRange)) throw new Error('INVALID_POINT');
+      if (['tracker','compass','trap','sweeper','closecall'].includes(input.skillId) && !freshAccurate(player,timestamp)) throw new Error('FRESH_GPS_REQUIRED');
+      if(input.skillId==='closecall') {
+        if(player.role!=='hider' || room.phase!=='playing') throw new Error('ABILITY_UNAVAILABLE');
+        if(player.effects?.closecall) throw new Error('ABILITY_COOLDOWN');
+        if(!nearbyFreshSeeker(room,player,timestamp,20)) throw new Error('SEEKER_NOT_NEARBY');
+        if(!(player.inventory||[]).includes('closecall')) throw new Error('SKILL_UNAVAILABLE');
+        player.inventory.splice(player.inventory.indexOf('closecall'),1);
+        player.effects ||= {};
+        const closeCallDuration=skillTuning('closecall',room.settings).duration*1000;
+        player.effects.closecall={startedAt:timestamp,progressSince:timestamp,lastProofAt:timestamp,expiresAt:timestamp+90000,duration:closeCallDuration,radius:20};
+        player.skillsUsed=(Number(player.skillsUsed)||0)+1;
+        room.announcement={id:crypto.randomUUID(),type:'private',targetId:uid,title:'CLOSE_CALL_STARTED',message:`Bleib ${Math.round(closeCallDuration/1000)} Sekunden innerhalb von 20 m eines Seekers. Frische GPS-Messungen prüfen deinen Fortschritt.`,createdAt:timestamp};
+        result=true;
+      } else result=await game.activateSkill(context,uid,input.skillId,input.params || {});
       for (const candidate of Object.values(room.players)) if (candidate.id !== uid && timestamp-(candidate.locationAt || 0)>10000) candidate.location=null;
-      result=await game.activateSkill(context,uid,input.skillId,input.params || {}); break;
+      break;
     }
+    case 'useTacticalAbility': result=useTacticalAbility(room,player,input,timestamp); break;
     case 'collectItemBox':
       if (timestamp-(player.locationAt || 0)>10000 || player.location?.accuracy>25) throw new Error('FRESH_GPS_REQUIRED');
       result=await game.collectItemBox(context,uid,input.boxId); break;
@@ -220,6 +248,7 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
       if (kind==='stay') { if (!freshAccurate(player,timestamp)) throw new Error('FRESH_GPS_REQUIRED'); task.targetLocation=player.location; task.duration=60000; task.lastProofAt=timestamp; task.progressSince=timestamp; }
       if (kind==='cipher') {
         const puzzle=makeLogicCodePuzzle(); task.answer=puzzle.answer;
+        task.attemptsLeft=3;
         task.prompt=`TRESORCODE · 150 SEKUNDEN\nFinde den 3-stelligen Code. Alle drei Ziffern sind verschieden.\nJe Hinweis siehst du, wie viele Ziffern richtig platziert sind und wie viele zwar vorkommen, aber an der falschen Stelle stehen.\n\n${puzzle.clues.map(clue=>`${clue.guess} → ${clue.exact} richtig platziert · ${clue.misplaced} an anderer Stelle`).join('\n')}`;
       }
       if (kind==='scan') task.prompt='Signal Cache scannen · Gehe zum markierten Cache und schließe den Scan in 120 Sekunden innerhalb von 10 m ab.';
@@ -248,7 +277,11 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
       }
       if (task.kind==='cipher') {
         if (timestamp-task.createdAt<10000) { failTask(player,timestamp); return {room,result:{error:'TASK_TOO_FAST'}}; }
-        if (String(input.proof.answer||'').trim().toUpperCase()!==task.answer) { failTask(player,timestamp); return {room,result:{error:'WRONG_ANSWER'}}; }
+        if (String(input.proof.answer||'').trim().toUpperCase()!==task.answer) {
+          task.attemptsLeft=Math.max(0,Number.isInteger(task.attemptsLeft)?task.attemptsLeft:3)-1;
+          if(task.attemptsLeft===0) failTask(player,timestamp);
+          return {room,result:{error:'WRONG_ANSWER',attemptsRemaining:task.attemptsLeft}};
+        }
       } else if (task.kind==='visit' || task.kind==='scan') {
         if (!freshAccurate(player,timestamp) || distanceMeters(player.location,task.targetLocation)>task.radius) { failTask(player,timestamp); return {room,result:{error:'TASK_LOCATION_REQUIRED'}}; }
       } else if (task.kind==='proximity') {
@@ -277,7 +310,7 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
       if(room.photoMetadata) delete room.photoMetadata[uid];
       result=true;
       if (Object.values(room.players).every(p=>!p.active || p.status==='left')) {
-        room.phase='closed'; room.closedAt=timestamp; room.players={}; room.hostId=null; delete room.joinRequests; room.challenges={}; room.objectives={}; room.traps={}; room.decoys={}; room.itemBoxes={}; room.effects={}; room.photoMetadata={}; room.roundTracks={}; room.roundResults=[]; room.roundAchievements=[]; room.eventLog=[]; room.pendingCatch=null; room.announcement=null; room.announcementForSeeker=null; room.winner=null; room.startedAt=null; room.matchEndsAt=null; room.settings.center=null; delete room.roundPhotos;
+        room.phase='closed'; room.closedAt=timestamp; room.players={}; room.hostId=null; delete room.joinRequests; room.challenges={}; room.objectives={}; room.traps={}; room.decoys={}; room.itemBoxes={}; room.effects={}; room.restrictedZones={}; room.photoMetadata={}; room.roundTracks={}; room.roundResults=[]; room.roundAchievements=[]; room.eventLog=[]; room.pendingCatch=null; room.announcement=null; room.announcementForSeeker=null; room.winner=null; room.startedAt=null; room.matchEndsAt=null; room.settings.center=null; delete room.roundPhotos;
       }
       break;
     default: throw new Error('UNKNOWN_ACTION');
@@ -326,11 +359,82 @@ function recordRoundTrack(room,player,location,timestamp) {
 }
 
 function failTask(player,timestamp) { if (!player.activeTask) return; player.activeTask.failed=true; player.taskCooldownUntil=timestamp+120000; }
-function freshAccurate(player,timestamp) { return player.location && timestamp-(player.locationAt||0)<=10000 && Number(player.location.accuracy)<=25; }
+function freshAccurate(player,timestamp) { return player.location && timestamp>=(player.locationAt||0) && timestamp-(player.locationAt||0)<=10000 && Number(player.location.accuracy)<=25; }
 function freshCatchLocation(player,timestamp) { return player.location && timestamp-(player.locationAt||0)<=15000 && timestamp>=player.locationAt && Number(player.location.accuracy)<=60; }
 function catchDistanceLimit() { return 8; }
 function hasNearbyHider(room,seekerId,location,timestamp,radius) {
   return validPoint(location) && Object.values(room.players||{}).some(target=>target.id!==seekerId&&target.active&&target.role==='hider'&&freshAccurate(target,timestamp)&&distanceMeters(location,target.location)<=radius);
+}
+function nearbyFreshSeeker(room,hider,timestamp,radius) {
+  return Object.values(room.players||{}).some(candidate=>candidate.active&&candidate.role==='seeker'&&freshAccurate(candidate,timestamp)&&distanceMeters(hider.location,candidate.location)<=radius);
+}
+function useTacticalAbility(room,player,input,timestamp) {
+  if(room.phase!=='playing' || player.role!=='seeker' || !player.active) throw new Error('ABILITY_UNAVAILABLE');
+  const tuning=tacticalTuning(room.settings);
+  const cooldowns=player.tacticalCooldowns ||= {};
+  const ability=input.ability;
+  if(ability==='zone') {
+    if(!freshAccurate(player,timestamp)) throw new Error('FRESH_GPS_REQUIRED');
+    if((cooldowns.zone||0)>timestamp) throw new Error('ABILITY_COOLDOWN');
+    const center=input.center;
+    if(!validPoint(center) || !validPoint(room.settings.center) || distanceMeters(center,room.settings.center)>tuning.radius-tuning.zoneRadius) throw new Error('INVALID_POINT');
+    room.restrictedZones=Object.fromEntries(Object.entries(room.restrictedZones||{}).filter(([,zone])=>zone.expiresAt>timestamp));
+    if(Object.keys(room.restrictedZones).length>=3) throw new Error('ZONE_LIMIT');
+    if((Number(player.score)||0)<tuning.zoneCost) throw new Error('POINTS_REQUIRED');
+    player.score-=tuning.zoneCost;
+    const id=crypto.randomUUID();
+    const allowedInside=Object.values(room.players||{}).filter(candidate=>candidate.active&&candidate.role==='hider'&&freshAccurate(candidate,timestamp)&&distanceMeters(candidate.location,center)<=tuning.zoneRadius).map(candidate=>candidate.id);
+    room.restrictedZones[id]={id,center:{lat:center.lat,lng:center.lng},radius:tuning.zoneRadius,createdAt:timestamp,expiresAt:timestamp+tuning.zoneDuration*1000,ownerId:player.id,allowedInside};
+    cooldowns.zone=timestamp+tuning.zoneDuration*1000;
+    player.skillsUsed=(Number(player.skillsUsed)||0)+1;
+    room.announcement={id:crypto.randomUUID(),type:'global',title:'MAP_ZONE_LOCKED',message:`Sperrzone aktiv: Hider können ${tuning.zoneDuration} Sekunden lang nicht in den markierten Kreis laufen.`,createdAt:timestamp};
+    return true;
+  }
+  if(ability==='relocate') {
+    if(!freshAccurate(player,timestamp)) throw new Error('FRESH_GPS_REQUIRED');
+    if((cooldowns.relocate||0)>timestamp) throw new Error('ABILITY_COOLDOWN');
+    const active=Object.values(room.players||{}).filter(candidate=>candidate.active&&candidate.role==='hider');
+    if(!active.length) throw new Error('NO_ACTIVE_HIDERS');
+    let targets=[];
+    if(input.mode==='one') {
+      const target=room.players?.[input.targetId];
+      if(!target || !target.active || target.role!=='hider') throw new Error('TARGET_NOT_CATCHABLE');
+      targets=[target];
+    } else if(input.mode==='random') {
+      const choices=active.filter(candidate=>!candidate.forcedRelocation);
+      if(!choices.length) throw new Error('RELOCATION_PENDING');
+      targets=[choices[randomIndex(choices.length)]];
+    } else if(input.mode==='all') targets=active;
+    else throw new Error('INVALID_ABILITY');
+    if(targets.some(target=>target.forcedRelocation)) throw new Error('RELOCATION_PENDING');
+    if(targets.some(target=>!freshAccurate(target,timestamp))) throw new Error('FRESH_GPS_REQUIRED');
+    const cost=tuning.relocationCost(input.mode,targets.length);
+    if((Number(player.score)||0)<cost) throw new Error('POINTS_REQUIRED');
+    player.score-=cost;
+    for(const target of targets) target.forcedRelocation={id:crypto.randomUUID(),from:{lat:target.location.lat,lng:target.location.lng},minimumMeters:tuning.relocateDistance,createdAt:timestamp,requiredBy:player.id};
+    cooldowns.relocate=timestamp+90000;
+    player.skillsUsed=(Number(player.skillsUsed)||0)+1;
+    room.announcement={id:crypto.randomUUID(),type:'global',title:'FORCED_RELOCATION',message:`${targets.length===1?'Ein Hider muss':'Alle ausgewählten Hider müssen'} sich mindestens ${tuning.relocateDistance} m vom bisherigen Standort entfernen. Wählt sichere, öffentliche Wege.`,createdAt:timestamp};
+    return true;
+  }
+  if(ability==='exchangeTime') {
+    const seconds=Number(input.seconds);
+    if(![30,60,90].includes(seconds)) throw new Error('INVALID_ABILITY');
+    if((cooldowns.exchange||0)>timestamp) throw new Error('ABILITY_COOLDOWN');
+    if((Number(player.timeExchangesUsed)||0)>=3) throw new Error('EXCHANGE_LIMIT');
+    const remaining=(Number(room.matchEndsAt)||0)-timestamp;
+    if(remaining-seconds*1000<300000) throw new Error('MINIMUM_GAME_TIME');
+    const reward=tuning.exchangeReward(seconds);
+    room.matchEndsAt-=seconds*1000;
+    room.phaseEndsAt=room.matchEndsAt;
+    player.score=(Number(player.score)||0)+reward;
+    player.timeExchangesUsed=(Number(player.timeExchangesUsed)||0)+1;
+    cooldowns.exchange=timestamp+15000;
+    player.skillsUsed=(Number(player.skillsUsed)||0)+1;
+    room.announcement={id:crypto.randomUUID(),type:'private',targetId:player.id,title:'TIME_EXCHANGED',message:`${seconds} Sekunden eingetauscht · +${reward} Punkte. Noch ${3-player.timeExchangesUsed} Tausche möglich.`,createdAt:timestamp};
+    return true;
+  }
+  throw new Error('INVALID_ABILITY');
 }
 function gameRandomPoint(center,radius) { const angle=Math.random()*360, distance=Math.sqrt(Math.random())*Math.max(0,radius-40); return destinationPoint(center,distance,angle); }
 function isSanitizedJpeg(bytes) {
