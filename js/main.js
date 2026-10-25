@@ -294,8 +294,8 @@ function attachRoomListener() {
     handleAnnouncement(room);
     handleEffects(room);
     if (priorPhase !== room.phase) onPhaseChanged(room.phase);
-    if(priorRole==='hider' && self.role==='spectator') showMoment('Du wurdest gefunden','Deine Runde ist vorbei. Die Rundenwertung bleibt sichtbar.','caught','⊗',3200);
-    else if(priorRole==='hider' && self.role==='seeker') showMoment('Du wurdest infiziert','Jetzt hilfst du dem Suchteam bei der Jagd.','catch','ϟ',3000);
+    if(priorRole==='hider' && self.role==='spectator' && room.announcement?.targetId!==state.uid) showMoment('Du wurdest gefunden','Deine Runde ist vorbei. Die Rundenwertung bleibt sichtbar.','caught','⊗',3200);
+    else if(priorRole==='hider' && self.role==='seeker' && room.announcement?.targetId!==state.uid) showMoment('Du wurdest infiziert','Jetzt hilfst du dem Suchteam bei der Jagd.','catch','ϟ',3000);
   }, (error) => {
     console.error('Room listener error', error);
     state.connected = false;
