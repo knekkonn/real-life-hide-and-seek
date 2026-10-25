@@ -46,6 +46,28 @@ export function addPlayerToRoom(room, uid, name) {
   return { ok:true };
 }
 
+function secureShuffle(values) {
+  const shuffled=values.slice(),cryptoApi=globalThis.crypto;
+  for(let i=shuffled.length-1;i>0;i--) {
+    let index;
+    if(typeof cryptoApi?.getRandomValues==='function') {
+      const range=0x1_0000_0000,limit=Math.floor(range/(i+1))*(i+1),sample=new Uint32Array(1);
+      do { cryptoApi.getRandomValues(sample); } while(sample[0]>=limit);
+      index=sample[0]%(i+1);
+    } else index=Math.floor(Math.random()*(i+1));
+    [shuffled[i],shuffled[index]]=[shuffled[index],shuffled[i]];
+  }
+  return shuffled;
+}
+
+function chooseSeekers(players,count) {
+  const knownHiders=players.filter(player=>player.previousRole==='hider');
+  const unknown=players.filter(player=>!['hider','seeker'].includes(player.previousRole));
+  const knownSeekers=players.filter(player=>player.previousRole==='seeker');
+  const candidates=[...secureShuffle(knownHiders),...secureShuffle(unknown),...secureShuffle(knownSeekers)];
+  return new Set(candidates.slice(0,count).map(player=>player.id));
+}
+
 export function updateSettings(room, uid, patch) {
   if (room.hostId !== uid || room.phase !== 'lobby') return null;
   room.settings ||= JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
@@ -74,13 +96,9 @@ export function startCountdown(room, uid, hostLocation) {
   if (requestedSeekers >= players.length) {
     return { ok:false, reason:'Es muss mindestens einen Hider geben. Reduziere die Anzahl der Seeker oder füge Spieler hinzu.' };
   }
-  // Randomize the complete player order so no join order or host advantage determines roles.
-  const shuffledPlayers = players.slice();
-  for (let i = shuffledPlayers.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [shuffledPlayers[i], shuffledPlayers[j]] = [shuffledPlayers[j], shuffledPlayers[i]];
-  }
-  const seekerIds = new Set(shuffledPlayers.slice(0, requestedSeekers).map((player) => player.id));
+  // Use an unbiased secure shuffle on the first round. On repeats, rotate
+  // previous seekers out when possible, choosing randomly among equally due players.
+  const seekerIds = chooseSeekers(players,requestedSeekers);
   const hiderSkills = eligibleSkills(room.settings, 'hider');
   const seekerSkills = eligibleSkills(room.settings, 'seeker');
   for (const player of players) {
@@ -346,6 +364,27 @@ function finalizeRound(room,timestamp) {
   room.roundAchievements=awards;
   room.roundResults=players.map(p=>({id:p.id,name:p.name,role:p.role,status:p.status,score:Number(p.score)||0,coins:Number(p.coins)||0,hidersFound:Number(p.hidersFound)||0,skillsUsed:Number(p.skillsUsed)||0,longestStaySeconds:Number(p.longestStaySeconds)||0,hiddenSeconds:Number(p.hiddenSeconds)||0,foundItems:Number(p.foundItems)||0,tasksSolved:Number(p.tasksSolved)||0})).sort((a,b)=>b.score-a.score||b.hidersFound-a.hidersFound);
   room.roundFinishedAt=timestamp;
+}
+
+export function finishRoundIfNoOpposition(room,timestamp=now()) {
+  if(!room||!['countdown','reveal','hide','playing'].includes(room.phase)) return false;
+  const active=Object.values(room.players||{}).filter(player=>player.active&&player.status!=='left');
+  const hiders=active.filter(player=>player.role==='hider');
+  const seekers=active.filter(player=>player.role==='seeker');
+  let winner=null,reason='';
+  if(active.length===1) {
+    winner=active[0].role==='hider'?'hiders':'seekers';
+    reason='Nur noch ein aktiver Spieler ist im Raum.';
+  } else if(active.length>0&&!hiders.length&&seekers.length) {
+    winner='seekers'; reason='Es sind keine Hider mehr aktiv.';
+  } else if(active.length>0&&!seekers.length&&hiders.length) {
+    winner='hiders'; reason='Es sind keine Seeker mehr im Raum.';
+  }
+  if(!winner) return false;
+  room.phase='finished';room.winner=winner;room.phaseEndsAt=null;room.pendingCatch=null;room.photoMetadata={};
+  finalizeRound(room,timestamp);
+  room.announcement={id:randomId('announcement'),type:'system',title:'MISSION COMPLETE',message:`Runde automatisch beendet. ${reason}`,createdAt:timestamp};
+  return true;
 }
 
 function applyCatch(room,seekerId,targetId,timestamp) {

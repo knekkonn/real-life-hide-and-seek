@@ -31,7 +31,7 @@ export function publicRoom(source, uid, timestamp=Date.now()) {
   if (room.pendingCatch && ![room.pendingCatch.targetId,room.pendingCatch.seekerId].includes(uid)) delete room.pendingCatch;
   const activePhase = room.phase === 'playing' || (room.phase === 'hide' && self.role === 'hider');
   for (const player of Object.values(room.players || {})) {
-    if (player.id === uid) continue;
+    if (player.id === uid) { delete player.previousRole; continue; }
     const effects = self.effects || {};
     const fresh = timestamp - (player.locationAt || 0) <= 10000 && timestamp >= (player.locationAt || 0);
     const ghost = (player.effects?.ghostUntil || 0) > timestamp;
@@ -46,7 +46,7 @@ export function publicRoom(source, uid, timestamp=Date.now()) {
       player.location = {lat:Math.round(player.location.lat*1000)/1000,lng:Math.round(player.location.lng*1000)/1000};
     }
     // Public score/role remain visible; private inventory, effects and zone evidence do not.
-    delete player.inventory; delete player.effects; delete player.zone; delete player.previousStatus; delete player.activeTask; delete player.taskCooldownUntil; delete player.forcedRelocation; delete player.zoneEvacuations; delete player.tacticalCooldowns; delete player.timeExchangesUsed;
+    delete player.inventory; delete player.effects; delete player.zone; delete player.previousStatus; delete player.previousRole; delete player.activeTask; delete player.taskCooldownUntil; delete player.forcedRelocation; delete player.zoneEvacuations; delete player.tacticalCooldowns; delete player.timeExchangesUsed;
     delete player._stayAnchor; delete player.stationarySince; delete player.rewardAt; delete player.hiderStartedAt;
     if (player.id === uid) { /* own task and cooldown remain private to the requesting player */ }
   }
@@ -127,14 +127,22 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
   if (room.phase === 'playing' && (player.effects?.frozenUntil || 0)>timestamp && !['updatePlayerLocation','leaveRoom'].includes(action)) throw new Error('FROZEN');
   if (room.phase === 'playing' && player.role==='hider' && player.forcedRelocation && !['updatePlayerLocation','leaveRoom'].includes(action)) throw new Error('RELOCATION_REQUIRED');
   if (room.phase === 'closed' && action !== 'leaveRoom') throw new Error('LOBBY_CLOSED');
-  if (action === 'newRound') {
-    host(room,uid); if (room.phase !== 'finished') throw new Error('ROUND_NOT_FINISHED');
-    room.phase='lobby'; room.phaseEndsAt=null; room.matchEndsAt=null; room.pendingCatch=null; room.announcement=null; room.winner=null;
-    room.challenges={}; room.itemBoxes={}; room.objectives={}; room.traps={}; room.decoys={}; room.effects={}; room.restrictedZones={}; room.photoMetadata={}; room.roundTracks={};
-    for (const [id,p] of Object.entries(room.players)) if (!p.active || p.status==='left') delete room.players[id];
-    room.roundId=crypto.randomUUID();
-    room.roundResults=[]; room.roundAchievements=[];
-    for (const p of Object.values(room.players)) { p.active=true; p.role='waiting'; p.status='waiting'; p.coins=0; p.score=0; p.hidersFound=0; p.skillsUsed=0; p.longestStaySeconds=0; p.hiddenSeconds=0; p.stationarySince=0; p._stayAnchor=null; p.hiderStartedAt=0; p.rewardAt=timestamp; p.inventory=[]; p.effects={}; p.location=null; p.locationAt=0; p.activeTask=null; p.taskCooldownUntil=0; p.foundItems=0; p.tasksSolved=0; p.zone={violations:0}; p.forcedRelocation=null; p.tacticalCooldowns={}; p.timeExchangesUsed=0; }
+  if (action === 'newRound' || action === 'restartRound') {
+    host(room,uid);
+    if (room.phase !== 'finished') throw new Error('ROUND_NOT_FINISHED');
+    if(action==='restartRound') {
+      const roster=Object.values(room.players||{}).filter(p=>p?.status!=='left');
+      const seekers=Math.max(1,Math.min(10,Number(room.settings?.seekerCount)||1));
+      if(roster.length<2) throw new Error('NOT_ENOUGH_PLAYERS');
+      if(seekers>=roster.length) throw new Error('NOT_ENOUGH_HIDERS');
+      if(!validPoint(room.settings?.center)) throw new Error('CENTER_REQUIRED');
+    }
+    resetRoomForNextRound(room,timestamp);
+    if(action==='newRound') return {room,result:true};
+    const started=game.startCountdown(room,uid,null);
+    if(!started.ok) throw new Error('ROUND_RESTART_FAILED');
+    room.objectives=Object.fromEntries(Array.from({length:5},(_,i)=>[String(i),{id:String(i),location:gameRandomPoint(room.settings.center,room.settings.radius)}]));
+    room.photoMetadata={}; room.roundTracks={};
     return {room,result:true};
   }
   if (action === 'settings') { host(room,uid); return {room:game.updateSettings(room,uid,input.patch || {}),result:true}; }
@@ -336,6 +344,7 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
         if(successor) { room.players[uid].isHost=false; successor.isHost=true; room.hostId=successor.id; }
       }
       if(room.photoMetadata) delete room.photoMetadata[uid];
+      if(room.phase!=='closed') game.finishRoundIfNoOpposition(room,timestamp);
       result=true;
       if (Object.values(room.players).every(p=>!p.active || p.status==='left')) {
         room.phase='closed'; room.closedAt=timestamp; room.players={}; room.hostId=null; delete room.joinRequests; room.challenges={}; room.objectives={}; room.traps={}; room.decoys={}; room.itemBoxes={}; room.effects={}; room.restrictedZones={}; room.photoMetadata={}; room.roundTracks={}; room.roundResults=[]; room.roundAchievements=[]; room.eventLog=[]; room.pendingCatch=null; room.announcement=null; room.announcementForSeeker=null; room.winner=null; room.startedAt=null; room.matchEndsAt=null; room.settings.center=null; delete room.roundPhotos;
@@ -346,6 +355,24 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
   // Do not leak the complete mutation result (which may include raw GPS).
   if (room.phase==='finished') room.photoMetadata={};
   return {room:context.room,result:result && typeof result === 'object' && 'ok' in result ? result : Boolean(result)};
+}
+
+function resetRoomForNextRound(room,timestamp) {
+  room.phase='lobby'; room.phaseEndsAt=null; room.matchEndsAt=null; room.startedAt=null; room.pendingCatch=null;
+  room.announcement=null; room.announcementForSeeker=null; room.winner=null;
+  room.challenges={}; room.itemBoxes={}; room.objectives={}; room.traps={}; room.decoys={}; room.effects={}; room.restrictedZones={}; room.photoMetadata={}; room.roundTracks={};
+  room.roundId=crypto.randomUUID(); room.roundResults=[]; room.roundAchievements=[]; room.eventLog=[];
+  room.lastPhaseTransitionAt=timestamp;
+  delete room.joinRequests; delete room.roundPhotos; delete room.closedAt;
+  for(const [id,player] of Object.entries(room.players||{})) {
+    if(!player||player.status==='left') { delete room.players[id]; continue; }
+    if(['hider','seeker'].includes(player.role)) player.previousRole=player.role;
+    player.isHost=id===room.hostId; player.active=true; player.role='waiting'; player.status='waiting';
+    player.coins=0; player.score=0; player.hidersFound=0; player.skillsUsed=0; player.longestStaySeconds=0; player.hiddenSeconds=0; player.stationarySince=0;
+    player._stayAnchor=null; player.hiderStartedAt=0; player.rewardAt=timestamp; player.inventory=[]; player.effects={}; player.location=null; player.locationAt=0;
+    player.activeTask=null; player.taskCooldownUntil=0; player.foundItems=0; player.tasksSolved=0; player.zone={violations:0}; player.zoneEvacuations={};
+    player.forcedRelocation=null; player.tacticalCooldowns={}; player.timeExchangesUsed=0; player.previousStatus=null;
+  }
 }
 
 export async function settlePhases(room, fetchImpl=fetch) {

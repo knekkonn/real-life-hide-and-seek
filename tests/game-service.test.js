@@ -97,6 +97,17 @@ test('host can configure multiple randomized seekers and both roles receive a ra
   assert.ok(players.filter((player) => player.role === 'hider').every((player) => ['ghost','decoy','trap','shield','seekerradar','silent','closecall','freeze'].includes(player.inventory[0])));
 });
 
+test('next round randomly rotates the previous Seeker out when another player can take the role',()=>{
+  const room=createRoomData('host-1','NIGHTHAWK');
+  addPlayerToRoom(room,'player-2','EMBER');addPlayerToRoom(room,'player-3','GHOST');
+  room.players['host-1'].previousRole='seeker';
+  room.players['player-2'].previousRole='hider';
+  room.players['player-3'].previousRole='hider';
+  assert.equal(startCountdown(room,'host-1',null).ok,true);
+  const seeker=Object.values(room.players).find(player=>player.role==='seeker');
+  assert.ok(['player-2','player-3'].includes(seeker.id),'a previous Hider randomly takes the Seeker role');
+});
+
 test('role settings never allow starting without a hider', () => {
   const room = createRoomData('host-1', 'NIGHTHAWK');
   addPlayerToRoom(room, 'player-2', 'EMBER');

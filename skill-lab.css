@@ -91,3 +91,26 @@
   .skill-lab-card p{min-height:0}
   .skill-lab-card .button{min-height:44px}
 }
+.skill-lab-task-note{margin:0 0 9px;color:var(--muted);font-size:9px;line-height:1.5}
+.skill-lab-tasks{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.skill-lab-task-card{min-width:0;padding:11px;border:1px solid var(--line);border-radius:9px;background:linear-gradient(145deg,rgba(10,22,31,.92),rgba(5,11,18,.68))}
+.skill-lab-task-card.is-active{grid-column:1/-1;border-color:rgba(70,232,210,.38);box-shadow:0 0 0 1px rgba(70,232,210,.07)}
+.skill-lab-task-top{display:flex;align-items:center;justify-content:space-between;gap:6px}
+.skill-lab-task-top .tiny-label{font-size:7px;text-align:right}
+.skill-lab-task-card h4{margin:8px 0 4px;font:700 15px var(--font-head)}
+.skill-lab-task-card>p{min-height:38px;margin:0 0 9px;color:var(--muted);font-size:9px;line-height:1.5}
+.skill-lab-task-card>.button{width:100%;min-height:40px;padding:7px;font-size:9px}
+.skill-lab-task-card .button:disabled{opacity:.48}
+.skill-lab-task-challenge{display:grid;gap:8px;margin:9px 0;padding:10px;border:1px solid var(--line);border-radius:8px;background:rgba(3,8,13,.5)}
+.skill-lab-task-challenge>p{margin:0;color:#b9c9d7;font-size:9px;line-height:1.5}
+.skill-lab-task-challenge ul{display:grid;gap:5px;margin:0;padding-left:18px;color:#aebfcb;font:9px/1.5 var(--font-mono)}
+.skill-lab-task-challenge ul strong{color:var(--cyan)}
+.skill-lab-task-input,.skill-lab-task-actions{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.skill-lab-task-input input{width:95px;min-height:42px;padding:8px;border:1px solid var(--line);border-radius:7px;background:var(--surface-2);color:var(--text);font:14px var(--font-mono)}
+.skill-lab-task-input>span{color:var(--muted);font:10px var(--font-mono)}
+.skill-lab-task-input .button,.skill-lab-task-actions .button{flex:1;min-height:42px;padding:7px;font-size:9px}
+.skill-lab-task-challenge .field-label{margin:0}
+.skill-lab-task-challenge input[type=file]{width:100%;min-height:42px;padding:7px;font-size:9px}
+.skill-lab-photo-preview{width:min(100%,320px);max-height:180px;justify-self:start;object-fit:contain;border:1px solid var(--line);border-radius:8px;background:#02060a}
+.skill-lab-task-cancel{min-height:38px;margin-top:5px}
+@media(max-width:560px){.skill-lab-tasks{grid-template-columns:1fr}.skill-lab-task-card{padding:12px}.skill-lab-task-card>p{min-height:0}.skill-lab-task-input{display:grid;grid-template-columns:80px 1fr}.skill-lab-task-input>span{display:none}.skill-lab-task-input .button{min-height:44px}.skill-lab-task-actions{display:grid;grid-template-columns:1fr 1fr}.skill-lab-task-card>.button{min-height:44px}}
