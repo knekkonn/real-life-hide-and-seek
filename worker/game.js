@@ -3,7 +3,7 @@ import { normalizeRoom } from '../js/transactions.js';
 import { evaluateZone, validPoint } from '../js/gps.js';
 import { distanceMeters, bearingDegrees, destinationPoint } from '../js/utils.js';
 import { findSafeItemLocations } from './itembox.js';
-import { skillTuning, tacticalTuning } from '../js/skills.js';
+import { skillTuning, tacticalTuning, TASK_RULES } from '../js/skills.js';
 import { COSMETIC_IDS } from '../js/profile.js';
 
 export function publicRoom(source, uid, timestamp=Date.now()) {
@@ -31,7 +31,9 @@ export function publicRoom(source, uid, timestamp=Date.now()) {
   if (room.pendingCatch && ![room.pendingCatch.targetId,room.pendingCatch.seekerId].includes(uid)) delete room.pendingCatch;
   const activePhase = room.phase === 'playing' || (room.phase === 'hide' && self.role === 'hider');
   for (const player of Object.values(room.players || {})) {
-    if (player.id === uid) { delete player.previousRole; continue; }
+    player.inventory=(player.inventory||[]).filter(id=>id!=='closecall');
+    if(player.effects) delete player.effects.closecall;
+    if (player.id === uid) { delete player.previousRole; if(player.activeTask) delete player.activeTask.seekerId; continue; }
     const effects = self.effects || {};
     const fresh = timestamp - (player.locationAt || 0) <= 10000 && timestamp >= (player.locationAt || 0);
     const ghost = (player.effects?.ghostUntil || 0) > timestamp;
@@ -47,7 +49,7 @@ export function publicRoom(source, uid, timestamp=Date.now()) {
     }
     // Public score/role remain visible; private inventory, effects and zone evidence do not.
     delete player.inventory; delete player.effects; delete player.zone; delete player.previousStatus; delete player.previousRole; delete player.activeTask; delete player.taskCooldownUntil; delete player.forcedRelocation; delete player.zoneEvacuations; delete player.tacticalCooldowns; delete player.timeExchangesUsed;
-    delete player._stayAnchor; delete player.stationarySince; delete player.rewardAt; delete player.hiderStartedAt;
+    delete player._stayAnchor; delete player.stationarySince; delete player.rewardAt; delete player.hiderStartedAt; delete player.closeCallUsed;
     if (player.id === uid) { /* own task and cooldown remain private to the requesting player */ }
   }
   room.traps = Object.fromEntries(Object.entries(room.traps || {}).filter(([,trap]) => trap.ownerId === uid));
@@ -122,7 +124,7 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
     // eliminate a player who completed the move in time.
     const locationProof=action==='updatePlayerLocation'&&validPoint(input.location)&&Number.isFinite(input.location.accuracy)&&input.location.accuracy>0&&input.location.accuracy<=25&&Number.isFinite(input.location.measuredAt)&&Math.abs(timestamp-input.location.measuredAt)<=10000?input.location:null;
     settleTacticalDeadlines(room,timestamp,{playerId:uid,location:locationProof});
-    if(!player.active) return {room,result:false};
+    if(!player.active && action!=='leaveRoom') return {room,result:false};
   }
   if (room.phase === 'playing' && (player.effects?.frozenUntil || 0)>timestamp && !['updatePlayerLocation','leaveRoom'].includes(action)) throw new Error('FROZEN');
   if (room.phase === 'playing' && player.role==='hider' && player.forcedRelocation && !['updatePlayerLocation','leaveRoom'].includes(action)) throw new Error('RELOCATION_REQUIRED');
@@ -164,7 +166,7 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
     case 'maybePayTimeReward': result=await game.maybePayTimeReward(context,uid); break;
     case 'updatePlayerLocation': {
       const location = input.location;
-      if (!validPoint(location) || !Number.isFinite(location.accuracy) || location.accuracy<=0 || !Number.isFinite(location.measuredAt) || Math.abs(timestamp-location.measuredAt)>10000) throw new Error('INVALID_GPS');
+      if (!validPoint(location) || !Number.isFinite(location.accuracy) || location.accuracy<=0 || !Number.isFinite(location.measuredAt) || timestamp-location.measuredAt>10000 || location.measuredAt>timestamp+2000) throw new Error('INVALID_GPS');
       if(room.phase==='playing' && player.role==='hider') {
         for(const zone of Object.values(room.restrictedZones||{})) {
           if(zone.expiresAt<=timestamp || distanceMeters(location,zone.center)>zone.radius) continue;
@@ -188,12 +190,13 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
       let autoCompleteVisit=false;
       if (player.activeTask && !player.activeTask.completed && !player.activeTask.failed) {
         const task=player.activeTask;
-        if (timestamp>task.expiresAt || task.kind==='stay' && (timestamp-task.lastProofAt>10000 || distanceMeters(location,task.targetLocation)>10)) failTask(player,timestamp);
+        if (!['photo','closecall'].includes(task.kind) && (timestamp>task.expiresAt || task.kind==='stay' && (timestamp-task.lastProofAt>10000 || distanceMeters(location,task.targetLocation)>10))) failTask(player,timestamp);
         else if (task.kind==='stay') task.lastProofAt=timestamp;
         else if (['visit','scan'].includes(task.kind) && freshAccurate({...player,location,locationAt:timestamp},timestamp) && distanceMeters(location,task.targetLocation)<=task.radius) { task.arrivedAt=timestamp; autoCompleteVisit=task.kind==='visit'; }
         else if (task.kind==='proximity' && hasNearbyHider(room,uid,location,timestamp,10)) task.arrivedAt=timestamp;
       }
-      await game.updatePlayerLocation(context,uid,{...location,measuredAt:timestamp});
+      await game.updatePlayerLocation(context,uid,location);
+      await settleRiskTasks(room,timestamp);
       if(player.role==='hider') {
         player.zoneEvacuations ||= {};
         for(const zone of Object.values(room.restrictedZones||{})) if(freshAccurate(player,timestamp)&&distanceMeters(player.location,zone.center)>zone.radius) {
@@ -221,26 +224,15 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
     case 'buySkill': result=await game.buySkill(context,uid,input.skillId); break;
     case 'activateSkill': {
       if (input.skillId === 'decoy' && (!validPoint(input.params?.location) || distanceMeters(input.params.location,room.settings.center) > skillTuning('decoy',room.settings).decoyRange)) throw new Error('INVALID_POINT');
-      if (['tracker','compass','trap','sweeper','closecall','freeze'].includes(input.skillId) && !freshAccurate(player,timestamp)) throw new Error('FRESH_GPS_REQUIRED');
-      if(input.skillId==='closecall') {
-        if(player.role!=='hider' || room.phase!=='playing') throw new Error('ABILITY_UNAVAILABLE');
-        if(player.effects?.closecall) throw new Error('ABILITY_COOLDOWN');
-        if(!nearbyFreshSeeker(room,player,timestamp,20)) throw new Error('SEEKER_NOT_NEARBY');
-        if(!(player.inventory||[]).includes('closecall')) throw new Error('SKILL_UNAVAILABLE');
-        player.inventory.splice(player.inventory.indexOf('closecall'),1);
-        player.effects ||= {};
-        const closeCallDuration=skillTuning('closecall',room.settings).duration*1000;
-        player.effects.closecall={startedAt:timestamp,progressSince:timestamp,lastProofAt:timestamp,expiresAt:timestamp+90000,duration:closeCallDuration,radius:20};
-        player.skillsUsed=(Number(player.skillsUsed)||0)+1;
-        room.announcement={id:crypto.randomUUID(),type:'private',targetId:uid,title:'CLOSE_CALL_STARTED',message:`Bleib ${Math.round(closeCallDuration/1000)} Sekunden innerhalb von 20 m eines Seekers. Frische GPS-Messungen prüfen deinen Fortschritt.`,createdAt:timestamp};
-        result=true;
-      } else if(input.skillId==='freeze') {
+      if (['tracker','compass','trap','sweeper','freeze'].includes(input.skillId) && !freshAccurate(player,timestamp)) throw new Error('FRESH_GPS_REQUIRED');
+      if(input.skillId==='freeze') {
         if(player.role!=='hider'||room.phase!=='playing'||!(player.inventory||[]).includes('freeze')) throw new Error('SKILL_UNAVAILABLE');
         const tuning=skillTuning('freeze',room.settings);
         const target=Object.values(room.players||{}).filter(candidate=>candidate.active&&candidate.role==='seeker'&&freshAccurate(candidate,timestamp)&&distanceMeters(player.location,candidate.location)<=tuning.freezeRadius).sort((a,b)=>distanceMeters(player.location,a.location)-distanceMeters(player.location,b.location))[0];
         if(!target) throw new Error('SEEKER_NOT_NEARBY');
+        if((target.effects?.freezeImmuneUntil||target.effects?.frozenUntil||0)>timestamp) throw new Error('ABILITY_COOLDOWN');
         player.inventory.splice(player.inventory.indexOf('freeze'),1); player.skillsUsed=(Number(player.skillsUsed)||0)+1;
-        target.effects ||= {}; target.effects.frozenUntil=Math.max(Number(target.effects.frozenUntil)||0,timestamp+tuning.duration*1000); target.effects.freezeSource='hider';
+        target.effects ||= {}; target.effects.frozenUntil=timestamp+tuning.duration*1000; target.effects.freezeImmuneUntil=target.effects.frozenUntil+20000; target.effects.freezeSource='hider';
         room.announcement={id:crypto.randomUUID(),type:'private',targetId:uid,title:'FROST_IMPULSE',message:`Seeker für ${tuning.duration} Sekunden eingefroren.`,createdAt:timestamp};
         room.announcementForSeeker={id:crypto.randomUUID(),targetId:target.id,title:'FROZEN',message:`Ein Hider hat dich für ${tuning.duration} Sekunden eingefroren.`,createdAt:timestamp};
         result=true;
@@ -254,14 +246,24 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
       result=await game.collectItemBox(context,uid,input.boxId); break;
     case 'beginTask': {
       const kind=input.kind;
-      const hiderKind=['cipher','visit','stay','photo'].includes(kind);
+      const hiderKind=['cipher','visit','stay','photo','closecall'].includes(kind);
       const seekerKind=['scan','proximity'].includes(kind);
       if (!player.active || !(player.role==='hider'&&hiderKind || player.role==='seeker'&&seekerKind) || (player.role==='hider'&&!['hide','playing'].includes(room.phase)) || (player.role==='seeker'&&room.phase!=='playing')) throw new Error('TASK_UNAVAILABLE');
       if ((player.taskCooldownUntil || 0)>timestamp) throw new Error('TASK_COOLDOWN');
+      if(kind==='closecall' && player.closeCallUsed) throw new Error('TASK_ALREADY_USED');
       if (player.activeTask && !player.activeTask.failed && !player.activeTask.completed) { if (player.activeTask.expiresAt>timestamp) throw new Error('TASK_ALREADY_ACTIVE'); failTask(player,timestamp); return {room,result:{error:'TASK_EXPIRED'}}; }
       if (kind==='photo' && room.photoMetadata?.[uid]?.roundId===(room.roundId || room.startedAt || room.createdAt)) throw new Error('PHOTO_ALREADY_SUBMITTED');
       const id=crypto.randomUUID();
       const task={id,kind,createdAt:timestamp,expiresAt:timestamp+(kind==='stay'?180000:kind==='photo'?300000:kind==='cipher'?150000:120000),failed:false,completed:false};
+      if(kind==='closecall') {
+        if(room.phase!=='playing') throw new Error('TASK_UNAVAILABLE');
+        const seeker=nearbyTaskSeeker(room,player,timestamp);
+        if(!seeker) throw new Error('SEEKER_NOT_NEARBY');
+        player.closeCallUsed=true;
+        task.duration=TASK_RULES.closecall.seconds*1000; task.radius=TASK_RULES.closecall.radius;
+        task.expiresAt=Math.min(timestamp+task.duration,Number(room.matchEndsAt)||Infinity);
+        task.lastProofAt=timestamp; task.seekerId=seeker.id; task.verifiedMs=0; task.pointsAwarded=0;
+      }
       if (kind==='visit') {
         if (!freshAccurate(player,timestamp)) throw new Error('FRESH_GPS_REQUIRED');
         const points=Object.values(room.objectives || {}); if (!points.length) throw new Error('NO_OBJECTIVES');
@@ -294,6 +296,9 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
       const task=player.activeTask;
       const image=input.image;
       if (!task || task.kind!=='photo' || task.id!==input.taskId || task.failed || task.completed || task.expiresAt<timestamp || !player.active || player.role!=='hider' || !['hide','playing'].includes(room.phase)) { if(task && task.kind==='photo' && !task.completed) { failTask(player,timestamp); return {room,result:{error:'INVALID_CHALLENGE'}}; } throw new Error('INVALID_CHALLENGE'); }
+      if(task.photoSubmittedAt) throw new Error('PHOTO_ALREADY_SUBMITTED');
+      if(!freshTaskGps(player,timestamp)) throw new Error('FRESH_GPS_REQUIRED');
+      if(room.phase==='playing' && Number(room.matchEndsAt)-timestamp<TASK_RULES.photo.seconds*1000) throw new Error('TASK_TIME_REQUIRED');
       if (typeof image!=='string' || image.length>25500 || !/^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(image)) { failTask(player,timestamp); return {room,result:{error:'INVALID_PHOTO'}}; }
       let bytes; try { bytes=Uint8Array.from(atob(image.slice(image.indexOf(',')+1)),char=>char.charCodeAt(0)); } catch { failTask(player,timestamp); return {room,result:{error:'INVALID_PHOTO'}}; }
       const sanitized=sanitizeJpeg(bytes);
@@ -301,12 +306,15 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
       const safeImage=jpegDataUrl(sanitized);
       room.photoMetadata ||= {};
       room.photoMetadata[uid]={playerId:uid,roundId:room.roundId || room.startedAt || room.createdAt,image:safeImage,createdAt:timestamp};
-      task.completed=true; player.taskCooldownUntil=timestamp+30000;
-      result=await game.completeTask(context,uid,'photo'); break;
+      task.photoSubmittedAt=timestamp; task.targetLocation={lat:player.location.lat,lng:player.location.lng};
+      task.duration=TASK_RULES.photo.seconds*1000; task.heldMs=0; task.lastProofAt=timestamp;
+      task.expiresAt=timestamp+600000;
+      result=true; break;
     }
-    case 'failTask': { const task=player.activeTask; if (!task || task.id!==input.taskId || task.completed) throw new Error('INVALID_CHALLENGE'); failTask(player,timestamp); result=true; break; }
+    case 'failTask': { const task=player.activeTask; if (!task || task.id!==input.taskId || task.completed) throw new Error('INVALID_CHALLENGE'); failTask(player,timestamp,{penalizePhoto:true}); result=true; break; }
     case 'completeTask': {
       const task=player.activeTask;
+      if(task && task.id!==input.proof?.id) throw new Error('INVALID_CHALLENGE');
       if (!task || task.id!==input.proof?.id || task.failed || task.completed || task.expiresAt<timestamp) {
         if (task && !task.completed) { failTask(player,timestamp); return {room,result:{error:'INVALID_CHALLENGE'}}; }
         throw new Error('INVALID_CHALLENGE');
@@ -370,13 +378,14 @@ function resetRoomForNextRound(room,timestamp) {
     player.isHost=id===room.hostId; player.active=true; player.role='waiting'; player.status='waiting';
     player.coins=0; player.score=0; player.hidersFound=0; player.skillsUsed=0; player.longestStaySeconds=0; player.hiddenSeconds=0; player.stationarySince=0;
     player._stayAnchor=null; player.hiderStartedAt=0; player.rewardAt=timestamp; player.inventory=[]; player.effects={}; player.location=null; player.locationAt=0;
-    player.activeTask=null; player.taskCooldownUntil=0; player.foundItems=0; player.tasksSolved=0; player.zone={violations:0}; player.zoneEvacuations={};
+    player.activeTask=null; player.taskCooldownUntil=0; player.closeCallUsed=false; player.foundItems=0; player.tasksSolved=0; player.zone={violations:0}; player.zoneEvacuations={};
     player.forcedRelocation=null; player.tacticalCooldowns={}; player.timeExchangesUsed=0; player.previousStatus=null;
   }
 }
 
 export async function settlePhases(room, fetchImpl=fetch) {
   const context = {room};
+  await settleRiskTasks(room,Date.now());
   settleTacticalDeadlines(room,Date.now());
   game.awardElapsedHiderPoints(room,Math.min(Date.now(),Number(room.matchEndsAt)||Date.now()));
   for (let i=0;i<5;i++) {
@@ -414,15 +423,76 @@ function recordRoundTrack(room,player,location,timestamp) {
   track.lastAt=timestamp;
 }
 
-function failTask(player,timestamp) { if (!player.activeTask) return; player.activeTask.failed=true; player.taskCooldownUntil=timestamp+120000; }
+function failTask(player,timestamp,{penalizePhoto=false,reason='Aufgabe fehlgeschlagen.'}={}) {
+  const task=player.activeTask;
+  if(!task || task.failed || task.completed) return;
+  task.failed=true; task.failureReason=reason; player.taskCooldownUntil=timestamp+120000;
+  if(penalizePhoto && task.kind==='photo' && task.photoSubmittedAt) {
+    task.penaltyPoints=TASK_RULES.photo.penalty;
+    player.score=(Number(player.score)||0)-task.penaltyPoints;
+    task.failureReason=`Versteck vor Ablauf der drei Minuten verlassen oder Aufgabe abgebrochen: −${task.penaltyPoints} Punkte.`;
+  }
+}
+function taskGpsAt(player,timestamp) {
+  return Math.min(timestamp,Number(player.locationAt)||0,Number(player.location?.measuredAt)||Number(player.locationAt)||0);
+}
+function freshTaskGps(player,timestamp) {
+  return freshAccurate(player,timestamp) && timestamp-taskGpsAt(player,timestamp)<=10000;
+}
+function nearbyTaskSeeker(room,player,timestamp) {
+  if(!freshTaskGps(player,timestamp)) return null;
+  return Object.values(room.players||{}).filter(candidate=>candidate.active&&candidate.role==='seeker'&&freshTaskGps(candidate,timestamp)&&(candidate.effects?.frozenUntil||0)<=timestamp&&distanceMeters(player.location,candidate.location)<=TASK_RULES.closecall.radius)
+    .sort((a,b)=>taskGpsAt(b,timestamp)-taskGpsAt(a,timestamp))[0]||null;
+}
+function finishCloseCall(player,timestamp) {
+  const task=player.activeTask;
+  task.completed=true; task.completedAt=timestamp;
+  player.taskCooldownUntil=timestamp+(task.pointsAwarded>0?30000:120000);
+  if(task.pointsAwarded>0) player.tasksSolved=(Number(player.tasksSolved)||0)+1;
+}
+async function settleRiskTasks(room,timestamp) {
+  for(const player of Object.values(room.players||{})) {
+    const task=player.activeTask;
+    if(!task || task.failed || task.completed || !['photo','closecall'].includes(task.kind)) continue;
+    if(!player.active || player.role!=='hider' || !['hide','playing'].includes(room.phase)) {
+      if(task.kind==='closecall') finishCloseCall(player,timestamp);
+      else failTask(player,timestamp,{reason:'Runde oder Teilnahme beendet.'});
+      continue;
+    }
+    if(task.kind==='closecall') {
+      const seeker=room.phase==='playing'?nearbyTaskSeeker(room,player,timestamp):null;
+      if(!seeker || timestamp-task.lastProofAt>10000) { finishCloseCall(player,timestamp); continue; }
+      const proofAt=Math.min(taskGpsAt(player,timestamp),taskGpsAt(seeker,timestamp),task.expiresAt);
+      if(proofAt>task.lastProofAt) {
+        // A different Seeker starts a new evidence interval; never count gaps or repeated samples.
+        if(task.seekerId===seeker.id) task.verifiedMs+=proofAt-task.lastProofAt;
+        task.lastProofAt=proofAt; task.seekerId=seeker.id;
+        const points=Math.floor(task.verifiedMs/1000),delta=points-task.pointsAwarded;
+        player.score=(Number(player.score)||0)+delta; task.pointsAwarded=points;
+      }
+      if(proofAt>=task.expiresAt || timestamp>task.expiresAt+10000) finishCloseCall(player,timestamp);
+      continue;
+    }
+    if(timestamp>task.expiresAt) { failTask(player,timestamp,{reason:'Fotoaufgabe abgelaufen. Kein Punktabzug wegen fehlendem GPS-Nachweis.'}); continue; }
+    if(!task.photoSubmittedAt) continue;
+    if(!freshTaskGps(player,timestamp)) { task.heldMs=0; task.lastProofAt=null; continue; }
+    const distance=distanceMeters(player.location,task.targetLocation),proofAt=taskGpsAt(player,timestamp);
+    if(distance>10+Number(player.location.accuracy)) { failTask(player,timestamp,{penalizePhoto:true}); continue; }
+    if(distance>10) { task.heldMs=0; task.lastProofAt=null; continue; }
+    if(task.lastProofAt && proofAt>task.lastProofAt && proofAt-task.lastProofAt<=10000) task.heldMs+=proofAt-task.lastProofAt;
+    else if(!task.lastProofAt || proofAt-task.lastProofAt>10000) task.heldMs=0;
+    if(!task.lastProofAt || proofAt>task.lastProofAt) task.lastProofAt=proofAt;
+    if(task.heldMs>=task.duration) {
+      task.completed=true; task.completedAt=timestamp; player.taskCooldownUntil=timestamp+30000;
+      await game.completeTask({room,timestamp},player.id,'photo');
+    }
+  }
+}
 function freshAccurate(player,timestamp) { return player.location && timestamp>=(player.locationAt||0) && timestamp-(player.locationAt||0)<=10000 && Number(player.location.accuracy)<=25; }
 function freshCatchLocation(player,timestamp) { return player.location && timestamp-(player.locationAt||0)<=15000 && timestamp>=player.locationAt && Number(player.location.accuracy)<=60; }
 function catchDistanceLimit() { return 8; }
 function hasNearbyHider(room,seekerId,location,timestamp,radius) {
   return validPoint(location) && Object.values(room.players||{}).some(target=>target.id!==seekerId&&target.active&&target.role==='hider'&&freshAccurate(target,timestamp)&&distanceMeters(location,target.location)<=radius);
-}
-function nearbyFreshSeeker(room,hider,timestamp,radius) {
-  return Object.values(room.players||{}).some(candidate=>candidate.active&&candidate.role==='seeker'&&freshAccurate(candidate,timestamp)&&distanceMeters(hider.location,candidate.location)<=radius);
 }
 function settleTacticalDeadlines(room,timestamp,locationProof=null) {
   if(room.phase!=='playing') return false;
@@ -467,9 +537,11 @@ function useTacticalAbility(room,player,input,timestamp) {
   if(ability==='zone') {
     if(!freshAccurate(player,timestamp)) throw new Error('FRESH_GPS_REQUIRED');
     if((cooldowns.zone||0)>timestamp) throw new Error('ABILITY_COOLDOWN');
-    const zoneRadius=Number(input.radius??tuning.zoneRadius),zoneDuration=Number(input.duration??tuning.zoneDuration);
-    if(!Number.isInteger(zoneRadius)||zoneRadius<10||zoneRadius>tuning.maxZoneRadius||!Number.isInteger(zoneDuration)||zoneDuration<60||zoneDuration>180) throw new Error('INVALID_ZONE_SETTINGS');
-    const zoneCost=tuning.zoneCostFor(zoneRadius,zoneDuration);
+    const zoneRadius=Number(input.radius??tuning.zoneRadius);
+    if(!Number.isInteger(zoneRadius)||zoneRadius<tuning.minZoneRadius||zoneRadius>tuning.maxZoneRadius) throw new Error('INVALID_ZONE_SETTINGS');
+    const expiresAt=Number(room.matchEndsAt);
+    if(!Number.isFinite(expiresAt)||expiresAt-timestamp<tuning.zoneEvacuationSeconds*1000) throw new Error('TASK_TIME_REQUIRED');
+    const zoneCost=tuning.zoneCostFor(zoneRadius);
     const center=input.center;
     if(!validPoint(center) || !validPoint(room.settings.center) || distanceMeters(center,room.settings.center)>tuning.radius-zoneRadius) throw new Error('INVALID_POINT');
     room.restrictedZones=Object.fromEntries(Object.entries(room.restrictedZones||{}).filter(([,zone])=>zone.expiresAt>timestamp));
@@ -477,7 +549,7 @@ function useTacticalAbility(room,player,input,timestamp) {
     if((Number(player.score)||0)<zoneCost) throw new Error('POINTS_REQUIRED');
     player.score-=zoneCost;
     const id=crypto.randomUUID();
-    const expiresAt=timestamp+zoneDuration*1000,deadlineAt=Math.min(timestamp+tuning.zoneEvacuationSeconds*1000,expiresAt-1000);
+    const deadlineAt=timestamp+tuning.zoneEvacuationSeconds*1000;
     // Use the last server-accepted position to notify anyone already in the
     // circle. If it is stale, a fresh location can clear the obligation by
     // proving they are already outside.
@@ -487,7 +559,7 @@ function useTacticalAbility(room,player,input,timestamp) {
     for(const target of inside) { target.zoneEvacuations ||= {}; target.zoneEvacuations[id]={zoneId:id,deadlineAt,requiredBy:player.id}; }
     cooldowns.zone=expiresAt;
     player.skillsUsed=(Number(player.skillsUsed)||0)+1;
-    room.announcement={id:crypto.randomUUID(),type:'global',title:'MAP_ZONE_LOCKED',message:`Sperrzone: Radius ${zoneRadius} m · ${zoneDuration} Sekunden. Wer beim Aktivieren im Kreis steht, muss ihn innerhalb von ${Math.ceil((deadlineAt-timestamp)/1000)} Sekunden verlassen.`,createdAt:timestamp};
+    room.announcement={id:crypto.randomUUID(),type:'global',title:'MAP_ZONE_LOCKED',message:`Sperrzone: Radius ${zoneRadius} m · bis zum Rundenende. Wer beim Aktivieren im Kreis steht, muss ihn innerhalb von ${Math.ceil((deadlineAt-timestamp)/1000)} Sekunden verlassen.`,createdAt:timestamp};
     return true;
   }
   if(ability==='relocate') {
@@ -527,6 +599,7 @@ function useTacticalAbility(room,player,input,timestamp) {
     const reward=tuning.exchangeReward(seconds);
     room.matchEndsAt-=seconds*1000;
     room.phaseEndsAt=room.matchEndsAt;
+    for(const zone of Object.values(room.restrictedZones||{})) zone.expiresAt=Math.min(zone.expiresAt,room.matchEndsAt);
     player.score=(Number(player.score)||0)+reward;
     player.timeExchangesUsed=(Number(player.timeExchangesUsed)||0)+1;
     cooldowns.exchange=timestamp+15000;
