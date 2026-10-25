@@ -9,7 +9,6 @@ let playerUid = null;
 let initialized = false;
 const demoListeners = new Map();
 const DEMO_PREFIX = 'hideseek-room:';
-const FIREBASE_PLAYER_SESSION_KEY = 'hideseek-firebase-player-session-id';
 
 function demoKey(code) { return `${DEMO_PREFIX}${code}`; }
 function readDemoRoom(code) {
@@ -25,25 +24,6 @@ function emitDemoRoom(code, room) {
 function structuredCloneSafe(value) {
   if (value == null) return value;
   return JSON.parse(JSON.stringify(value));
-}
-
-function getFirebasePlayerSessionId() {
-  // Firebase's anonymous auth user is shared across tabs. The game needs a
-  // separate identity per tab so two people can join from the same browser.
-  // sessionStorage keeps that identity stable through reloads, but isolates
-  // independent tabs and browser sessions.
-  try {
-    let id = sessionStorage.getItem(FIREBASE_PLAYER_SESSION_KEY);
-    if (!id) {
-      const randomId = globalThis.crypto?.randomUUID?.().replaceAll('-', '')
-        || `${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
-      id = `player_${randomId}`;
-      sessionStorage.setItem(FIREBASE_PLAYER_SESSION_KEY, id);
-    }
-    return id;
-  } catch {
-    return `player_${globalThis.crypto?.randomUUID?.().replaceAll('-', '') || Math.random().toString(36).slice(2)}`;
-  }
 }
 
 export async function initBackend() {
@@ -63,8 +43,8 @@ export async function initBackend() {
       dbMod.onValue(dbMod.ref(db, '.info/serverTimeOffset'), (snapshot) => {
         setServerTimeOffset(Number(snapshot.val()) || 0);
       });
-      await authMod.signInAnonymously(auth);
-      playerUid = getFirebasePlayerSessionId();
+      const credential = await authMod.signInAnonymously(auth);
+      playerUid = credential.user.uid;
       backendMode = 'firebase';
       return { mode: backendMode, uid: playerUid };
     } catch (error) {
@@ -106,6 +86,33 @@ export async function getRoom(code) {
     return snapshot.exists() ? snapshot.val() : null;
   }
   return readDemoRoom(code);
+}
+
+export async function primeRoomForTransaction(code) {
+  if (backendMode !== 'firebase') return readDemoRoom(code);
+  const ref = roomRef(code);
+  const initial = await firebaseApi.get(ref);
+  if (!initial.exists()) return null;
+
+  // A one-shot get() does not reliably populate RTDB's sync tree for an
+  // immediate runTransaction() on a fresh client. Wait for the live listener
+  // to deliver the room first, so the transaction starts from current data.
+  return new Promise((resolve, reject) => {
+    let unsubscribe = () => {};
+    let settled = false;
+    const timer = window.setTimeout(() => finish(new Error('room-cache-timeout')), 10000);
+    const finish = (error, room) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      unsubscribe();
+      if (error) reject(error);
+      else resolve(room);
+    };
+    unsubscribe = firebaseApi.onValue(ref, (snapshot) => {
+      if (snapshot.exists()) finish(null, snapshot.val());
+    }, (error) => finish(error));
+  });
 }
 
 export async function createRoom(code, initialRoom) {
