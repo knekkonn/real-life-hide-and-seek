@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { TASK_LAB_CATALOG, createTaskLabSession, startTaskLabTask, setTaskLabDistance, advanceTaskLabStay, completeTaskLabTask, cancelTaskLabTask, taskLabSnapshot } from '../js/task-lab.js';
+import { TASK_LAB_CATALOG, createTaskLabSession, startTaskLabTask, setTaskLabDistance, advanceTaskLabStay, advanceTaskLabCloseCall, completeTaskLabTask, cancelTaskLabTask, taskLabSnapshot } from '../js/task-lab.js';
 
 test('task lab exposes only the tasks belonging to the selected practice role',()=>{
   const hider=createTaskLabSession('hider'),seeker=createTaskLabSession('seeker');
-  assert.deepEqual(TASK_LAB_CATALOG.hider.map(task=>task.kind),['cipher','visit','stay','photo']);
+  assert.deepEqual(TASK_LAB_CATALOG.hider.map(task=>task.kind),['cipher','visit','stay','photo','closecall']);
   assert.deepEqual(TASK_LAB_CATALOG.seeker.map(task=>task.kind),['scan','proximity']);
   assert.equal(startTaskLabTask(seeker,'cipher',1000).ok,false);
   assert.equal(startTaskLabTask(hider,'scan',1000).ok,false);
@@ -54,7 +54,12 @@ test('stay challenge uses controllable simulated time and expires without real G
 test('photo test accepts only a compressed JPEG data URL and keeps it out of the results log',()=>{
   const session=createTaskLabSession('hider');startTaskLabTask(session,'photo',1000);
   assert.equal(completeTaskLabTask(session,{photoData:'large-original-file'},2000).ok,false);
-  const result=completeTaskLabTask(session,{photoData:'data:image/jpeg;base64,AA=='},3000);
+  const photoData='data:image/jpeg;base64,AA==';
+  assert.equal(completeTaskLabTask(session,{photoData},3000).pending,true);
+  assert.equal(session.credits,0);
+  for(let i=0;i<12;i++) advanceTaskLabStay(session,15);
+  const result=completeTaskLabTask(session,{photoData},4000);
+  assert.equal(result.credits,45);
   assert.equal(result.ok,true);assert.equal(session.active,null);
   assert.ok(session.log.every(line=>!line.includes('data:image')));
 });

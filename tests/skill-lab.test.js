@@ -66,14 +66,11 @@ test('training catch enforces 8 m and the shield blocks one valid catch', () => 
   assert.equal(attemptSkillLabCatch(hider).caught,true);
 });
 
-test('practice Hider Mutprobe requires proximity and awards the same scaled points', () => {
-  const hider=createSkillLabSession('hider',500),timestamp=Date.now();
-  moveSkillLabTarget(hider,15);
-  assert.equal(activateSkillLabSkill(hider,'closecall').ok,true);
-  let snapshot;
-  for(let elapsed=5000;elapsed<=20_000;elapsed+=5000) snapshot=skillLabSnapshot(hider,timestamp+elapsed);
-  assert.equal(snapshot.score,120+tacticalTuning({radius:500}).closeCallReward);
-  assert.equal(hider.effects.closecall,undefined);
+test('Mutprobe is removed from the skill store and training inventory', () => {
+  const hider=createSkillLabSession('hider',500);
+  assert.equal(skillTuning('closecall',500),null);
+  assert.ok(!hider.inventory.includes('closecall'));
+  assert.equal(activateSkillLabSkill(hider,'closecall').ok,false);
 });
 
 test('practice Hider Frostimpuls freezes a nearby Seeker and shows the freeze on the test map', () => {
@@ -90,11 +87,12 @@ test('practice Hider Frostimpuls freezes a nearby Seeker and shows the freeze on
 
 test('practice Seeker strategic powers spend points and use scaled values', () => {
   const seeker=createSkillLabSession('seeker',1000),tuning=tacticalTuning({radius:1000});
+  seeker.score=200;
   assert.equal(activateSkillLabTactical(seeker,'zone',{x:57,y:50}).ok,true);
-  assert.equal(seeker.score,120-tuning.zoneCost);
+  assert.equal(seeker.score,200-tuning.zoneCost);
   assert.equal(skillLabSnapshot(seeker).restrictedZones.length,1);
   assert.equal(activateSkillLabTactical(seeker,'exchangeTime',{seconds:30}).ok,true);
-  assert.equal(seeker.score,120-tuning.zoneCost+tuning.exchangeReward(30));
+  assert.equal(seeker.score,200-tuning.zoneCost+tuning.exchangeReward(30));
   assert.equal(activateSkillLabTactical(seeker,'relocate',{mode:'random'}).ok,true);
   assert.equal(skillLabSnapshot(seeker).forcedHiders.length,1);
 });
