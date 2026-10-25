@@ -7,7 +7,7 @@ import {
   maybePayTimeReward, updatePlayerLocation, requestCatch, buySkill,
   activateSkill, collectItemBox, completeTask, leaveRoom
 } from './game-service.js';
-import { updateLobbyMap, resetLobbyMap, initMap, updateMap, centerMap, invalidateMapSize, resetMap } from './map.js';
+import { updateLobbyMap, resetLobbyMap, initMap, updateMap, centerMap, invalidateMapSize, resetMap, drawRoundTracks, clearRoundTracks } from './map.js';
 import { clamp, now, formatTime, escapeHTML, randomCode, distanceMeters, Sound, haptic, setSoundEnabled } from './utils.js';
 
 const $ = (id) => document.getElementById(id);
@@ -15,7 +15,7 @@ const state = {
   uid:null, playerName:'', roomCode:null, room:null, unsubscribe:null, connected:true,
   ownLocation:null, watchId:null, gpsPending:false, lastLocationWrite:0,
   lastAnnouncementId:null, lastSeekerSideAnnouncementId:null, subscriptionStartedAt:0, seenCatchRequest:null,
-  revealDismissedPhase:null, lastCountdownSecond:null, currentTab:'mapTab', lastCelebratedRoundId:null,
+  revealDismissedPhase:null, lastCountdownSecond:null, currentTab:'mapTab', lastCelebratedRoundId:null, lastTracksRoundId:null,
   audioOn:true, tickHandle:null, passiveRewardAt:0, shakeHandler:null, shakeTimer:null,
   shakeCount:0, shakeTarget:10, challengeDone:false, pendingTimer:null,
   roundPhotoUrls:new Map(), roundPhotoLoads:new Set(), roundPhotoFailures:new Map()
@@ -609,6 +609,8 @@ function renderLeaderboard() {
 
 function renderRoundResults(room) {
   const awards=room.roundAchievements||[]; const results=room.roundResults||[];
+  const roundId=room.roundId||room.startedAt||'current';
+  if(state.lastTracksRoundId!==roundId) { state.lastTracksRoundId=roundId; drawRoundTracks(roundId,room.roundTracks,room.players); }
   $('roundAwards').innerHTML=awards.map((award,i)=>{const winner=room.players?.[award.playerId];return `<div class="award-chip" style="animation-delay:${i*90}ms"><strong>🏅 ${escapeHTML(award.title)}</strong><small>${escapeHTML(winner?.name||'Operative')} · ${escapeHTML(award.detail)}</small></div>`}).join('')||'<p class="muted">Noch keine Auszeichnungen in dieser Runde.</p>';
   $('roundLeaderboard').innerHTML=`<h3>Runden-Bestenliste</h3>${results.map((player,i)=>`<div class="round-result-row" style="animation-delay:${i*55}ms"><span class="rank-number">${String(i+1).padStart(2,'0')}</span><div><strong>${escapeHTML(player.name||'Operative')}</strong><small>${player.hidersFound||0} Fänge · ${player.skillsUsed||0} Skills · ${Math.floor((player.longestStaySeconds||0)/60)} Min. am selben Ort</small></div><b>${player.score||0} P</b></div>`).join('')}`;
 }
@@ -708,6 +710,7 @@ function localExit() {
   clearInterval(state.taskProgressTimer);
   releaseRoundPhotos();
   state.roomCode = null; state.room = null; state.ownLocation = null;
+  state.lastTracksRoundId=null; clearRoundTracks();
   $('pendingStatus').classList.add('hidden'); $('createRoomBtn').disabled=false; $('joinRoomBtn').disabled=false;
   resetMap(); resetLobbyMap(); state.zone = null;
   state.lastAnnouncementId = null; state.lastSeekerSideAnnouncementId = null; state.seenCatchRequest = null;

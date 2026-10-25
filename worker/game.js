@@ -8,7 +8,7 @@ import { skillTuning } from '../js/skills.js';
 export function publicRoom(source, uid, timestamp=Date.now()) {
   const room = structuredClone(source);
   const self = room.players?.[uid];
-  if (!self) {
+  if (!self || self.status==='left') {
     if (room.joinRequests?.[uid]) return {code:room.code,phase:'pending',players:{},settings:{}};
     throw new Error('NOT_MEMBER');
   }
@@ -22,6 +22,8 @@ export function publicRoom(source, uid, timestamp=Date.now()) {
   } else delete room.roundPhotos;
   if (self.activeTask) { delete self.activeTask.answer; delete self.activeTask.shift; }
   delete room.processedActions;
+  if(room.phase!=='finished') delete room.roundTracks;
+  else room.roundTracks=Object.fromEntries(Object.entries(room.roundTracks||{}).map(([id,track])=>[id,{distanceMeters:Number(track.distanceMeters)||0,points:(Array.isArray(track.points)?track.points:[]).filter(point=>Array.isArray(point)&&point.length===2&&point.every(Number.isFinite)&&Math.abs(point[0])<=90&&Math.abs(point[1])<=180).slice(-240)}]));
   if (room.hostId !== uid) delete room.joinRequests;
   if (room.announcement?.type === 'private' && room.announcement.targetId !== uid) delete room.announcement;
   if (room.announcementForSeeker?.targetId !== uid) delete room.announcementForSeeker;
@@ -89,7 +91,7 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
   if (action === 'newRound') {
     host(room,uid); if (room.phase !== 'finished') throw new Error('ROUND_NOT_FINISHED');
     room.phase='lobby'; room.phaseEndsAt=null; room.matchEndsAt=null; room.pendingCatch=null; room.announcement=null; room.winner=null;
-    room.challenges={}; room.itemBoxes={}; room.objectives={}; room.traps={}; room.decoys={}; room.effects={}; room.photoMetadata={};
+    room.challenges={}; room.itemBoxes={}; room.objectives={}; room.traps={}; room.decoys={}; room.effects={}; room.photoMetadata={}; room.roundTracks={};
     for (const [id,p] of Object.entries(room.players)) if (!p.active || p.status==='left') delete room.players[id];
     room.roundId=crypto.randomUUID();
     room.roundResults=[]; room.roundAchievements=[];
@@ -103,7 +105,7 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
     const result = game.startCountdown(room,uid,null);
     room.objectives=Object.fromEntries(Array.from({length:5},(_,i)=>[String(i),{id:String(i),location:gameRandomPoint(room.settings.center,room.settings.radius)}]));
     if (!result.ok) throw new Error(result.reason);
-    room.roundId=crypto.randomUUID(); room.photoMetadata={};
+    room.roundId=crypto.randomUUID(); room.photoMetadata={}; room.roundTracks={};
     return {room,result:true};
   }
   let result;
@@ -124,6 +126,7 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
         if (zone.violations % 3 === 0) player.effects.frozenUntil=timestamp+30000;
       }
       player.zone=zone;
+      recordRoundTrack(room,player,location,timestamp);
       if (player.activeTask && !player.activeTask.completed && !player.activeTask.failed) {
         const task=player.activeTask;
         if (timestamp>task.expiresAt || task.kind==='stay' && (timestamp-task.lastProofAt>10000 || distanceMeters(location,task.targetLocation)>15)) failTask(player,timestamp);
@@ -221,7 +224,7 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
       if(room.photoMetadata) delete room.photoMetadata[uid];
       result=true;
       if (Object.values(room.players).every(p=>!p.active || p.status==='left')) {
-        room.phase='closed'; room.closedAt=timestamp; room.players={}; room.hostId=null; room.joinRequests={}; room.challenges={}; room.objectives={}; room.traps={}; room.decoys={}; room.itemBoxes={}; room.effects={}; room.photoMetadata={}; room.eventLog=[]; room.pendingCatch=null; room.announcement=null; room.announcementForSeeker=null; room.winner=null; room.startedAt=null; room.matchEndsAt=null; room.settings.center=null; delete room.roundPhotos;
+        room.phase='closed'; room.closedAt=timestamp; room.players={}; room.hostId=null; room.joinRequests={}; room.challenges={}; room.objectives={}; room.traps={}; room.decoys={}; room.itemBoxes={}; room.effects={}; room.photoMetadata={}; room.roundTracks={}; room.roundResults=[]; room.roundAchievements=[]; room.eventLog=[]; room.pendingCatch=null; room.announcement=null; room.announcementForSeeker=null; room.winner=null; room.startedAt=null; room.matchEndsAt=null; room.settings.center=null; delete room.roundPhotos;
       }
       break;
     default: throw new Error('UNKNOWN_ACTION');
@@ -250,6 +253,23 @@ export async function settlePhases(room, fetchImpl=fetch) {
   }
   if(context.room.phase==='finished') context.room.photoMetadata={};
   return context.room;
+}
+
+function recordRoundTrack(room,player,location,timestamp) {
+  if(!['hide','playing'].includes(room.phase) || !player.active || !['hider','seeker'].includes(player.role) || Number(location.accuracy)>50) return;
+  room.roundTracks ||= {};
+  const track=room.roundTracks[player.id] ||= {points:[],distanceMeters:0};
+  const last=track.points.at(-1);
+  const point=[Number(location.lat),Number(location.lng)];
+  if(last) {
+    const elapsed=timestamp-(Number(track.lastAt)||0);
+    const distance=distanceMeters({lat:last[0],lng:last[1]},{lat:point[0],lng:point[1]});
+    if(elapsed<15000 && distance<12) return;
+    track.distanceMeters=Math.round((Number(track.distanceMeters)||0)+distance);
+    if(track.points.length>=240) track.points=track.points.filter((_,index)=>index===0 || index%2===0);
+  }
+  track.points.push(point);
+  track.lastAt=timestamp;
 }
 
 function failTask(player,timestamp) { if (!player.activeTask) return; player.activeTask.failed=true; player.taskCooldownUntil=timestamp+120000; }
