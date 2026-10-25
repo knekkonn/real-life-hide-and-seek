@@ -16,3 +16,13 @@
 #lobbyMap { height: 280px; border-radius: 12px; margin: 12px 0; }
 .zone-preview p, .gps-status { font-size: 13px; line-height: 1.5; color: var(--muted); }
 .gps-status { padding: 16px; }
+.task-cooldown { min-height: 1.4em; color: var(--muted); margin-top: 12px; }
+.round-end { position: fixed; inset: 0; z-index: 800; display: grid; place-items: center; padding: 18px; background: rgba(3,8,13,.94); }
+.round-end-card { width: min(100%,620px); padding: clamp(24px,6vw,52px); text-align: center; }
+.round-end-card h2 { font-size: clamp(2.3rem,7vw,4rem); margin: 12px 0; }
+.round-end-actions { display: grid; gap: 12px; margin-top: 28px; }
+.round-photo-gallery { display:flex; align-items:flex-start; gap:12px; flex-wrap:wrap; margin-top:14px; padding:12px; border:1px solid var(--line); border-radius:12px; background:rgba(8,14,19,.72); }
+.round-photo-gallery > strong { flex-basis:100%; font-size:.82rem; letter-spacing:.06em; }
+.round-photo-gallery figure { width:min(42%,180px); margin:0; }
+.round-photo-gallery img { display:block; width:100%; aspect-ratio:4/3; object-fit:cover; border-radius:8px; border:1px solid var(--line); }
+.round-photo-gallery figcaption { margin-top:5px; color:var(--muted); font-size:.75rem; }

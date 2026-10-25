@@ -1,5 +1,5 @@
 import { evaluateZone } from './gps.js';
-import { initBackend, getBackendMode, getPlayerUid, createRoom, getRoom, mutateRoom, subscribeRoom, subscribeConnection, workerCommand } from './backend.js';
+import { initBackend, getBackendMode, getPlayerUid, createRoom, getRoom, mutateRoom, subscribeRoom, subscribeConnection, workerCommand, fetchRoundPhoto } from './backend.js';
 import { MAX_PLAYERS, MIN_PLAYERS } from './config.js';
 import { SKILLS, SKILL_IDS, DEFAULT_SETTINGS } from './skills.js';
 import {
@@ -17,7 +17,8 @@ const state = {
   lastAnnouncementId:null, lastSeekerSideAnnouncementId:null, subscriptionStartedAt:0, seenCatchRequest:null,
   revealDismissedPhase:null, lastCountdownSecond:null, currentTab:'mapTab',
   audioOn:true, tickHandle:null, passiveRewardAt:0, shakeHandler:null, shakeTimer:null,
-  shakeCount:0, shakeTarget:10, challengeDone:false, pendingTimer:null
+  shakeCount:0, shakeTarget:10, challengeDone:false, pendingTimer:null,
+  roundPhotoUrls:new Map(), roundPhotoLoads:new Set(), roundPhotoFailures:new Map()
 };
 
 const SKILL_ICONS = { sonar:'◉',tracker:'⌖',jammer:'ϟ',sprint:'⚡',sweeper:'⌁',compass:'➤',ghost:'✧',decoy:'◈',trap:'⌗',shield:'⬡',seekerradar:'◎',silent:'♧' };
@@ -111,8 +112,13 @@ async function startApp() {
   $('lobbyGpsBtn').addEventListener('click', requestGPS);
   $('catchBtn').addEventListener('click', openCatchPicker);
   $('activateSkillBtn').addEventListener('click', openSkillPicker);
-  $('startTaskBtn').addEventListener('click', startCodeTask);
-  $('startShakeBtn').addEventListener('click', startShakeChallenge);
+  $('startTaskBtn').addEventListener('click', () => startTask('cipher'));
+  $('visitTaskBtn').addEventListener('click', () => startTask('visit'));
+  $('stayTaskBtn').addEventListener('click', () => startTask('stay'));
+  $('photoTaskBtn').addEventListener('click', () => startTask('photo'));
+  $('newRoundBtn').addEventListener('click', startNewRound);
+  $('postRoundSettingsBtn').addEventListener('click', startNewRound);
+  $('leaveEndBtn').addEventListener('click', confirmLeaveRoom);
   $('modalCloseBtn').addEventListener('click', closeModal);
   $('modalRoot').addEventListener('click', (event) => { if (event.target.hasAttribute('data-close-modal')) closeModal(); });
   $('mapRadius').addEventListener('input', (event) => {
@@ -263,6 +269,7 @@ function attachRoomListener() {
   state.unsubscribe = subscribeRoom(subscribedCode, (room) => {
     if (state.roomCode !== subscribedCode) return;
     if (!room || room.phase === 'closed') {
+      if (room && getBackendMode() === 'worker' && state.roomCode) leaveRoom(state.roomCode,state.uid).catch(()=>{});
       if (state.roomCode) toast('Raum geschlossen', 'Die Lobby ist nicht mehr verfügbar.', 'warn');
       localExit();
       return;
@@ -317,7 +324,9 @@ function onPhaseChanged(phase) {
     else Sound.go();
   } else Sound.stopTension();
   if (phase === 'playing') { Sound.go(); haptic([30,50,30]); }
-  if (phase === 'finished') { Sound.alert(); haptic([70,80,70]); }
+  if (phase === 'finished' && state.lastEndSoundPhase !== 'finished') { state.lastEndSoundPhase='finished'; Sound.alert(); haptic([70,80,70]); }
+  if (phase === 'lobby') state.lastEndSoundPhase=null;
+  if (phase==='lobby' || phase==='finished') releaseRoundPhotos();
 }
 
 async function saveSettings(patch) {
@@ -399,6 +408,15 @@ function renderGame() {
   const role = self.role || 'waiting';
   $('gameRoomCode').textContent = state.roomCode;
   $('phaseLabel').textContent = PHASE_LABELS[phase] || 'LIVE MATCH';
+  $('roundEndScreen').classList.toggle('hidden', phase !== 'finished');
+  if (phase === 'finished') {
+    const localWinner=room.winner || (room.settings.mode === 'infected' ? 'seekers' : 'hiders');
+    $('winnerTitle').textContent=localWinner==='hiders' ? 'Hider gewinnen' : 'Seeker gewinnen';
+    $('winnerMessage').textContent=localWinner==='hiders' ? 'Die Hider haben bis zum Ende durchgehalten.' : 'Das Suchteam hat die Runde beendet.';
+    $('newRoundBtn').classList.toggle('hidden', !isHost());
+    $('postRoundSettingsBtn').classList.toggle('hidden', !isHost());
+  }
+  renderRoundPhotoGallery(room,role);
   $('gameModeTag').textContent = room.settings.mode === 'infected' ? 'INFECTED MODE' : 'CLASSIC MODE';
   $('phaseDot').style.background = phase === 'finished' ? 'var(--muted)' : phase === 'playing' ? 'var(--red)' : 'var(--neon)';
   $('phaseDot').style.boxShadow = phase === 'playing' ? '0 0 8px var(--red)' : '0 0 8px var(--neon)';
@@ -413,6 +431,10 @@ function renderGame() {
   $('coinBadge').textContent = `${self.coins || 0} ◈`;
   $('shopCoinCounter').textContent = `${self.coins || 0} ◈`;
   $('operativeItems').textContent = String((self.inventory || []).length);
+  const cooldownLeft=Math.max(0,Math.ceil(((Number(self.taskCooldownUntil)||0)-now())/1000));
+  $('taskCooldown').textContent=cooldownLeft ? `Aufgaben-Cooldown: ${cooldownLeft} s` : '';
+  $('taskCooldown').classList.toggle('hidden',!cooldownLeft);
+  for (const id of ['startTaskBtn','visitTaskBtn','stayTaskBtn','photoTaskBtn']) if ($(id)) $(id).disabled=cooldownLeft>0 || !canUseGame() || role!=='hider';
   const inventory = self.inventory || [];
   const activeSkill = inventory[0] ? SKILLS[inventory[0]] : null;
   $('activeSkillName').textContent = activeSkill?.short || (self.effects?.shield ? 'Schild aktiv' : 'Kein Skill bereit');
@@ -505,7 +527,7 @@ function renderQuickActions() {
     actions.push({icon:'◈',title:'Täusch-Ping',detail:'Falschen Marker setzen',action:()=>startDecoyPlacement(),disabled:!canAct || !inventory.includes('decoy')});
     actions.push({icon:'⌗',title:'EMP-Falle',detail:'Falle am Standort legen',action:()=>useSkillFromInventory('trap'),disabled:!canAct || !inventory.includes('trap') || !state.ownLocation});
   }
-  actions.push({icon:'▤',title:'Field Task',detail:'Credits verdienen',action:startCodeTask,disabled:!canAct});
+  actions.push({icon:'▤',title:'Field Task',detail:'Credits verdienen',action:()=>startTask('cipher'),disabled:!canAct || role!=='hider'});
   $('quickActions').innerHTML = actions.map((item,index) => `<button class="quick-action" type="button" data-quick="${index}" ${item.disabled ? 'disabled' : ''}><span>${item.icon}</span><strong>${item.title}</strong><small>${item.detail}</small></button>`).join('');
   $('quickActions').querySelectorAll('[data-quick]').forEach((button,index) => button.addEventListener('click', actions[Number(button.dataset.quick)].action));
 }
@@ -661,6 +683,8 @@ function localExit() {
   state.unsubscribe?.(); state.unsubscribe = null;
   if (state.watchId !== null && 'geolocation' in navigator) navigator.geolocation.clearWatch(state.watchId);
   state.watchId = null;
+  clearInterval(state.taskProgressTimer);
+  releaseRoundPhotos();
   state.roomCode = null; state.room = null; state.ownLocation = null;
   $('pendingStatus').classList.add('hidden'); $('createRoomBtn').disabled=false; $('joinRoomBtn').disabled=false;
   resetMap(); resetLobbyMap(); state.zone = null;
@@ -770,93 +794,97 @@ function startDecoyPlacement() {
   ]});
 }
 
-async function startCodeTask() {
-  if (getBackendMode() === 'worker') return startServerCodeTask();
-  const role = currentRole();
-  if (!canUseGame()) { toast('Task noch gesperrt', 'Aufgaben sind während der aktiven Hider-Phase oder im Match verfügbar.', 'warn'); return; }
-  const a = Math.floor(12 + Math.random()*38);
-  const b = Math.floor(11 + Math.random()*41);
-  const answer = a + b;
-  openModal({ kicker:'LOGIC PROTOCOL / 01', title:'Code knacken', body:`<p class="modal-copy">Berechne die Prüfsumme, um den Task abzuschließen und Credits zu erhalten.</p><div class="puzzle-code">${a} + ${b} = ?</div><label class="modal-field-label" for="taskAnswer">Antwort</label><input class="modal-input" id="taskAnswer" type="number" inputmode="numeric" placeholder="Prüfsumme eingeben"><p class="puzzle-hint">Ein korrekter Code bringt 25 Credits. Mit etwas Glück wird ein zusätzlicher Skill freigeschaltet.</p>`, actions:[
-    {label:'Abbrechen',variant:'button-secondary'},
-    {label:'Code prüfen',variant:'button-primary',keepOpen:true,onClick:async()=>{
-      const value = Number($('taskAnswer')?.value);
-      if (value !== answer) { Sound.error(); toast('Code falsch', 'Versuche es erneut. Der Task bleibt offen.', 'warn'); return; }
-      closeModal();
-      const ok = await completeTask(state.roomCode,state.uid,'code');
-      if (ok) { Sound.success(); haptic(30); toast('Task abgeschlossen', '+25 Credits gutgeschrieben.', 'success'); }
-      else toast('Task nicht verfügbar', 'Die Runde ist nicht aktiv oder dein Spielerstatus hat sich geändert.', 'warn');
-    }}
-  ]});
-  window.setTimeout(() => $('taskAnswer')?.focus(), 80);
-}
-
-async function startServerCodeTask() {
+async function startTask(kind) {
+  if (getBackendMode() !== 'worker') { toast('Sichere Aufgabe nicht verfügbar','Aufgaben mit GPS-Nachweis benötigen das autorisierte Worker-Backend.','warn'); return; }
+  if (getSelf()?.taskCooldownUntil > now()) { toast('Cooldown aktiv',`Noch ${Math.ceil((getSelf().taskCooldownUntil-now())/1000)} s warten.`,'warn'); return; }
   try {
-    const {result:challenge} = await workerCommand(state.roomCode,'beginTask',{kind:'code'});
-    openModal({title:'Code knacken',body:`<p class="modal-copy">Server-Aufgabe: ${escapeHTML(challenge.prompt)} = ?</p><label for="taskAnswer">Antwort</label><input id="taskAnswer" class="modal-input" type="number" inputmode="numeric">`,actions:[
-      {label:'Abbrechen'},
-      {label:'Prüfen',variant:'button-primary',keepOpen:true,onClick:async()=>{
-        const ok=await completeTask(state.roomCode,state.uid,'code',{id:challenge.id,answer:Number($('taskAnswer').value)});
-        if (ok) { closeModal(); Sound.success(); toast('Task abgeschlossen','+25 Credits','success'); }
-      }}
+    const challenge=(await workerCommand(state.roomCode,'beginTask',{kind})).result;
+    state.activeTaskId=challenge.id;
+    const escapedPrompt=escapeHTML(challenge.prompt || 'Finde den Zielpunkt auf der Karte.');
+    const body=kind==='cipher'
+      ? `<p class="modal-copy">${escapedPrompt}</p><label class="modal-field-label" for="taskAnswer">Entschlüsseltes Wort</label><input id="taskAnswer" class="modal-input" autocomplete="off" maxlength="8" aria-label="Entschlüsseltes Wort"><p>Falsche Antwort beendet den Versuch und startet den Cooldown.</p>`
+      : kind==='visit'
+      ? `<p class="modal-copy">Gehe zum geheimen Punkt in der Zone. Das Ziel erscheint auf deiner Karte. Bleib in einem sicheren, öffentlichen Bereich.</p><p id="visitTaskStatus">Zielsuche läuft · 120 Sekunden</p>`
+      : kind==='photo'
+      ? `<p class="modal-copy">Fotografiere dein Versteck, ohne andere Personen aufzunehmen. Das Bild wird im Browser verkleinert und ohne EXIF-Daten an die Runde übertragen. Es ist für das Suchteam sichtbar und wird beim Rundenende gelöscht.</p><label class="modal-field-label" for="taskPhoto">Kamera oder Bild auswählen</label><input id="taskPhoto" class="modal-input" type="file" accept="image/jpeg,image/png,image/webp" capture="environment"><p>Nur ein kleines JPEG wird übertragen. Das Bild bleibt auf die laufende Runde beschränkt.</p>`
+      : `<p class="modal-copy">Halte deinen Standort 60 Sekunden lang innerhalb von 15 m. GPS-Lücken über 10 Sekunden, zu ungenaue Messungen oder Bewegung beenden den Versuch.</p><p id="stayTaskStatus">Verbleibende Zeit: 60 s</p>`;
+    openModal({kicker:'FIELD CHALLENGE',title:kind==='cipher'?'Doppel-Chiffre knacken':kind==='visit'?'Geheimer Zielpunkt':kind==='photo'?'Versteck fotografieren':'Versteck halten',body,closeable:false,actions:[
+      {label:'Abbrechen',variant:'button-secondary',onClick:async()=>{ await workerCommand(state.roomCode,'failTask',{taskId:challenge.id}); clearInterval(state.taskProgressTimer); }},
+      ...(kind==='cipher'?[{label:'Antwort prüfen',variant:'button-primary',keepOpen:true,onClick:async()=>{
+        await completeTask(state.roomCode,state.uid,'code',{id:challenge.id,answer:$('taskAnswer').value});
+        closeModal(); toast('Aufgabe geschafft','Belohnung wurde gutgeschrieben.','success');
+      }}]:kind==='visit'?[{label:'Ich bin am Ziel',variant:'button-primary',keepOpen:true,onClick:async()=>{
+        await completeTask(state.roomCode,state.uid,'visit',{id:challenge.id}); closeModal(); toast('Ziel erreicht','Belohnung wurde gutgeschrieben.','success');
+      }}]:kind==='photo'?[{label:'Foto senden',variant:'button-primary',keepOpen:true,onClick:async()=>{
+        const file=$('taskPhoto')?.files?.[0]; if(!file) { toast('Foto fehlt','Nimm ein Foto auf oder wähle ein Bild aus.','warn'); return; }
+        const image=await compressPhoto(file);
+        await workerCommand(state.roomCode,'submitPhoto',{taskId:challenge.id,image});
+        closeModal(); toast('Foto für die Runde gespeichert','Das Suchteam kann es bis zum Rundenende sehen.','success');
+      }}]:[{label:'60 Sekunden gehalten',variant:'button-primary',keepOpen:true,onClick:async()=>{
+        await completeTask(state.roomCode,state.uid,'stay',{id:challenge.id}); closeModal(); toast('Versteck gehalten','Belohnung wurde gutgeschrieben.','success');
+      }}])
     ]});
-  } catch (error) { toast('Aufgabe nicht verfügbar',error.message,'warn'); }
+    if(kind==='cipher') $('taskAnswer').focus();
+    if(kind==='stay') state.taskProgressTimer=window.setInterval(()=>{
+      const el=$('stayTaskStatus'); if(!el) {clearInterval(state.taskProgressTimer);return;}
+      const left=Math.max(0,60-Math.floor((now()-(getSelf()?.activeTask?.progressSince || now()))/1000)); el.textContent=`Verbleibende Zeit: ${left} s`;
+      $('modalActions').querySelector('.button-primary').disabled=left>0;
+    },500);
+  } catch(error) { toast('Aufgabe fehlgeschlagen',error.message,'warn'); }
+}
+async function compressPhoto(file) {
+  if(!['image/jpeg','image/png','image/webp'].includes(file.type) || file.size>8*1024*1024) throw new Error('Bitte wähle ein JPEG, PNG oder WebP unter 8 MB.');
+  const bitmap=await createImageBitmap(file);
+  try {
+    const scale=Math.min(1,320/bitmap.width,240/bitmap.height);
+    const canvas=document.createElement('canvas'); canvas.width=Math.max(1,Math.round(bitmap.width*scale)); canvas.height=Math.max(1,Math.round(bitmap.height*scale));
+    canvas.getContext('2d',{alpha:false}).drawImage(bitmap,0,0,canvas.width,canvas.height);
+    for(let quality=.58;quality>=.28;quality-=.06) { const data=canvas.toDataURL('image/jpeg',quality); if(data.length<=25000) return data; }
+    throw new Error('Das Bild ist zu groß. Bitte ein kleineres Bild aufnehmen.');
+  } finally { bitmap.close?.(); }
+}
+async function startNewRound() {
+  if (!isHost()) { toast('Host erforderlich','Nur der Host kann die nächste Runde starten.','warn'); return; }
+  try { await workerCommand(state.roomCode,'newRound'); toast('Neue Runde bereit','Einstellungen wurden zurückgesetzt. Der Host kann die Lobby konfigurieren und starten.','success'); }
+  catch(error) { toast('Neue Runde fehlgeschlagen',error.message,'danger'); }
 }
 
-async function startShakeChallenge() {
-  if (!canUseGame()) { toast('Challenge nicht verfügbar', 'Aufgaben sind während einer aktiven Phase verfügbar.', 'warn'); return; }
-  if (getBackendMode() === 'worker') {
-    try { state.shakeChallenge=(await workerCommand(state.roomCode,'beginTask',{kind:'shake'})).result; }
-    catch (error) { toast('Challenge nicht verfügbar',error.message,'warn'); return; }
-  }
-  state.shakeStartedAt=Date.now(); state.lastShakeAt=0;
-  state.shakeCount = 0; state.challengeDone = false;
-  openModal({ kicker:'MOVEMENT PROTOCOL / 02', title:'Shake Challenge', body:`<p class="modal-copy">Schüttle dein Gerät 10-mal innerhalb von 10 Sekunden. Auf Desktop kannst du die Bewegung über den Simulationsbutton auslösen.</p><div class="puzzle-code"><span id="shakeCounter">0</span> / 10</div><div class="challenge-progress"><span id="shakeProgress"></span></div><p class="puzzle-hint" id="shakeHint">Warte auf Bewegungssignal …</p><div class="shake-buttons"><button class="button button-secondary shake-button" type="button" id="simulateShakeBtn">+1 Shake (Demo)</button><button class="button button-secondary shake-button" type="button" id="permissionShakeBtn">Sensor aktivieren</button></div>`, actions:[{label:'Abbrechen',variant:'button-secondary'}] });
-  $('simulateShakeBtn').addEventListener('click', () => incrementShake());
-  $('permissionShakeBtn').addEventListener('click', async () => {
-    try {
-      if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
-        const permission = await DeviceMotionEvent.requestPermission();
-        if (permission !== 'granted') { toast('Sensorzugriff nicht erlaubt', 'Nutze den Demo-Button oder erlaube Bewegungssensoren.', 'warn'); return; }
+function renderRoundPhotoGallery(room,role) {
+  const gallery=$('roundPhotoGallery'); if(!gallery) return;
+  gallery.replaceChildren();
+  const photos=role==='seeker' && room.phase==='playing' && Array.isArray(room.roundPhotos) ? room.roundPhotos : [];
+  gallery.classList.toggle('hidden',photos.length===0);
+  if(!photos.length) return;
+  const heading=document.createElement('strong'); heading.textContent='Hider-Fotos dieser Runde'; gallery.appendChild(heading);
+  const roundId=room.roundId || room.startedAt || 'current';
+  for(const photo of photos) {
+    if(!/^[A-Za-z0-9_-]{4,128}$/.test(photo.id||'')) continue;
+    const key=`${roundId}:${photo.id}`; const figure=document.createElement('figure');
+    const image=document.createElement('img'); image.alt=`Versteckfoto von ${photo.name}`; image.loading='lazy';
+    const caption=document.createElement('figcaption'); caption.textContent=photo.name;
+    const url=state.roundPhotoUrls.get(key);
+    if(url) image.src=url;
+    else {
+      caption.textContent=state.roundPhotoFailures.get(key)>now() ? `${photo.name} · Foto vorübergehend nicht verfügbar` : `${photo.name} · Foto wird geladen`;
+      if(!state.roundPhotoLoads.has(key) && (state.roundPhotoFailures.get(key)||0)<=now()) {
+        state.roundPhotoLoads.add(key);
+        fetchRoundPhoto(state.roomCode,photo.id).then(blob=>{
+          const active=state.room, stillAvailable=active?.phase==='playing' && (active.roundId || active.startedAt || 'current')===roundId && active.roundPhotos?.some(item=>item.id===photo.id);
+          if(!stillAvailable) return;
+          state.roundPhotoUrls.set(key,URL.createObjectURL(blob));
+          renderRoundPhotoGallery(active,currentRole());
+        }).catch(error=>{state.roundPhotoFailures.set(key,now()+30000);console.warn('Rundenfoto konnte nicht geladen werden:',error.message);}).finally(()=>state.roundPhotoLoads.delete(key));
       }
-      if (!('DeviceMotionEvent' in window)) { toast('Sensor nicht verfügbar', 'Auf diesem Gerät gibt es keinen Bewegungssensor.', 'warn'); return; }
-      state.shakeHandler = (event) => {
-        const acc = event.accelerationIncludingGravity || event.acceleration;
-        if (!acc) return;
-        const magnitude = Math.sqrt((acc.x||0)**2 + (acc.y||0)**2 + (acc.z||0)**2);
-        if (magnitude > 17) incrementShake();
-      };
-      window.addEventListener('devicemotion', state.shakeHandler);
-      $('shakeHint').textContent = 'Bewegungssensor aktiv. Jetzt schütteln!';
-    } catch (error) { toast('Sensor konnte nicht aktiviert werden', error?.message || 'Nutze den Demo-Button.', 'warn'); }
-  });
-  state.shakeTimer = window.setTimeout(() => {
-    if (!state.challengeDone) { state.challengeDone = true; stopShakeChallenge(); toast('Challenge abgelaufen', 'Versuche es beim nächsten Mal erneut.', 'warn'); closeModal(); }
-  }, 10_000);
-}
-
-function incrementShake() {
-  if (state.challengeDone || $('modalRoot').classList.contains('hidden')) return;
-  if (Date.now()-state.lastShakeAt<200) return;
-  state.lastShakeAt=Date.now();
-  state.shakeCount++;
-  $('shakeCounter').textContent = String(state.shakeCount);
-  $('shakeProgress').style.width = `${Math.min(100,state.shakeCount/state.shakeTarget*100)}%`;
-  haptic(10); Sound.click();
-  if (state.shakeCount >= state.shakeTarget) {
-    state.challengeDone = true;
-    stopShakeChallenge();
-    closeModal();
-    const delay=getBackendMode() === 'worker' ? Math.max(0,8100-(Date.now()-state.shakeStartedAt)) : 0;
-    const challengeId=state.shakeChallenge?.id;
-    const code=state.roomCode, uid=state.uid;
-    setTimeout(() => completeTask(code,uid,'shake',{id:challengeId}).then((ok) => {
-      if (ok) { Sound.success(); toast('Shake Challenge geschafft', '+15 Credits gutgeschrieben.', 'success'); }
-      else toast('Challenge nicht verfügbar', 'Die Runde hat sich geändert.', 'warn');
-    }).catch((error)=>toast('Challenge nicht bestätigt',error.message,'warn')),delay);
+    }
+    figure.append(image,caption); gallery.appendChild(figure);
   }
 }
+
+function releaseRoundPhotos() {
+  for(const url of state.roundPhotoUrls.values()) URL.revokeObjectURL(url);
+  state.roundPhotoUrls.clear(); state.roundPhotoLoads.clear(); state.roundPhotoFailures.clear();
+}
+
 
 function stopShakeChallenge() {
   if (state.shakeTimer) window.clearTimeout(state.shakeTimer);
@@ -868,6 +896,11 @@ function stopShakeChallenge() {
 function tick() {
   const room = state.room;
   if (!room || !state.roomCode) return;
+  const self=getSelf();
+  const cooldownLeft=Math.max(0,Math.ceil(((Number(self?.taskCooldownUntil)||0)-now())/1000));
+  const cooldown=$('taskCooldown');
+  if (cooldown) { cooldown.textContent=cooldownLeft ? `Aufgaben-Cooldown: ${cooldownLeft} s` : ''; cooldown.classList.toggle('hidden',!cooldownLeft); }
+  for (const id of ['startTaskBtn','visitTaskBtn','stayTaskBtn','photoTaskBtn']) if ($(id)) $(id).disabled=cooldownLeft>0 || !canUseGame() || self?.role!=='hider';
   state.zone = evaluateZone(state.zone, {location:state.ownLocation, center:room.settings?.center, radius:room.settings?.radius, connected:state.connected, timestamp:now()});
   const labels = {inside:'Innerhalb der Zone', warning:`Zone verlassen? Rückkehr: ${state.zone.remaining} s`, outside:getBackendMode() === 'worker' ? 'Außerhalb der Zone – Server prüft die Strafe anhand frischer Messungen.' : 'Anhaltend außerhalb – Host informieren. Keine automatische Strafe.', uncertain:'GPS ungenau – keine Strafe', stale:'GPS veraltet – keine Strafe', unavailable:state.gpsError || 'GPS nicht verfügbar', offline:'Verbindung unterbrochen – keine Strafe'};
   const gpsStatus = $('gpsStatus');

@@ -57,16 +57,112 @@ test('forged reward submissions cannot award currency', async () => {
   await assert.rejects(applyAction(room,'guest',{action:'completeTask',kind:'code',proof:{id:'forged',answer:42}}),/INVALID_CHALLENGE/);
   assert.equal(room.players.guest.coins,before);
 });
-test('server-issued challenges require correct answer, delay and one-time redemption', async () => {
-  const room=playing();
-  const {result}=await applyAction(room,'guest',{action:'beginTask',kind:'code'});
-  const challenge=room.challenges.guest;
-  await assert.rejects(applyAction(room,'guest',{action:'completeTask',proof:{id:result.id,answer:challenge.answer}}),/INVALID_CHALLENGE/);
-  challenge.createdAt=Date.now()-5000;
-  await assert.rejects(applyAction(room,'guest',{action:'completeTask',proof:{id:result.id,answer:-1}}),/WRONG_ANSWER/);
-  await applyAction(room,'guest',{action:'completeTask',proof:{id:result.id,answer:challenge.answer}});
-  assert.equal(room.players.guest.coins,25);
-  await assert.rejects(applyAction(room,'guest',{action:'completeTask',proof:{id:result.id,answer:challenge.answer}}),/INVALID_CHALLENGE/);
+test('server-issued double ciphers are private, rate-limited and redeem once', async () => {
+  const room=playing(); const timestamp=Date.now();
+  const {result}=await applyAction(room,'guest',{action:'beginTask',kind:'cipher'},timestamp);
+  const challenge=room.players.guest.activeTask;
+  assert.match(result.prompt,/Alphabet-Spiegel/);
+  assert.equal(publicRoom(room,'guest',timestamp).players.guest.activeTask.answer,undefined);
+  assert.equal(publicRoom(room,'host',timestamp).players.guest.activeTask,undefined);
+  const tooFast=await applyAction(room,'guest',{action:'completeTask',proof:{id:result.id,answer:challenge.answer}},timestamp+1000);
+  assert.equal(tooFast.result.error,'TASK_TOO_FAST');
+  assert.equal(room.players.guest.taskCooldownUntil,timestamp+121000);
+  assert.equal(room.players.guest.coins,0);
+
+  const successRoom=playing();
+  const started=await applyAction(successRoom,'guest',{action:'beginTask',kind:'cipher'},timestamp);
+  const answer=successRoom.players.guest.activeTask.answer;
+  const reward=await applyAction(successRoom,'guest',{action:'completeTask',proof:{id:started.result.id,answer}},timestamp+16000);
+  assert.equal(reward.result,true);
+  assert.equal(successRoom.players.guest.coins,25);
+  await assert.rejects(applyAction(successRoom,'guest',{action:'completeTask',proof:{id:started.result.id,answer}},timestamp+17000),/INVALID_CHALLENGE/);
+});
+
+test('visit tasks select private in-zone targets and movement failures trigger cooldown', async () => {
+  const room=playing(); const timestamp=Date.now();
+  room.objectives={one:{id:'one',location:{lat:0.001,lng:0}}};
+  assert.equal(publicRoom(room,'guest',timestamp).objectives,undefined,'all objective coordinates stay private until assigned');
+  const {result}=await applyAction(room,'guest',{action:'beginTask',kind:'visit'},timestamp);
+  assert.deepEqual(result.targetLocation,{lat:0.001,lng:0},'the target is returned only to the requesting player');
+  const guestView=publicRoom(room,'guest',timestamp);
+  assert.deepEqual(guestView.players.guest.activeTask.targetLocation,{lat:0.001,lng:0});
+  assert.equal(publicRoom(room,'host',timestamp).players.guest.activeTask,undefined);
+  const failed=await applyAction(room,'guest',{action:'completeTask',proof:{id:result.id}},timestamp+1000);
+  assert.equal(failed.result.error,'TASK_LOCATION_REQUIRED');
+  assert.equal(room.players.guest.taskCooldownUntil,timestamp+121000);
+});
+
+test('stay tasks fail when the player leaves the registered hiding point', async () => {
+  const room=playing(); const timestamp=Date.now();
+  const {result}=await applyAction(room,'guest',{action:'beginTask',kind:'stay'},timestamp);
+  const moved=await applyAction(room,'guest',{action:'updatePlayerLocation',location:{lat:0.001,lng:0,accuracy:5,measuredAt:timestamp+1000}},timestamp+1000);
+  assert.ok(moved.result);
+  assert.equal(room.players.guest.activeTask.failed,true);
+  assert.equal(room.players.guest.taskCooldownUntil,timestamp+121000);
+  assert.equal(room.players.guest.activeTask.id,result.id,'the failed attempt remains recorded until the next attempt');
+});
+
+test('round photo task only shares sanitized JPEG with seekers and erases it on round end', async () => {
+  const room=playing(); const timestamp=Date.now();
+  const {result}=await applyAction(room,'guest',{action:'beginTask',kind:'photo'},timestamp);
+  const jpeg=Uint8Array.from([0xff,0xd8,0xff,0xc0,0x00,0x11,0x08,0x00,0xf0,0x01,0x40,0x03,0x01,0x11,0x00,0x02,0x11,0x00,0x03,0x11,0x00,0xff,0xda,0x00,0x0c,0x03,0x01,0x00,0x02,0x11,0x03,0x11,0x00,0x3f,0x00,...new Array(120).fill(0x11),0xff,0xd9]);
+  const image='data:image/jpeg;base64,'+Buffer.from(jpeg).toString('base64');
+  await applyAction(room,'guest',{action:'submitPhoto',taskId:result.id,image},timestamp+1000);
+  assert.equal(Object.keys(room.photoMetadata).length,1);
+  assert.equal(publicRoom(room,'host',timestamp+1000).roundPhotos[0].image,undefined,'room polling returns photo metadata only');
+  assert.equal(publicRoom(room,'guest',timestamp+1000).roundPhotos,undefined,'hider photos are not echoed to hiders');
+  await assert.rejects(applyAction(room,'guest',{action:'beginTask',kind:'photo'},timestamp+32000),/PHOTO_ALREADY_SUBMITTED/);
+  room.phase='finished';
+  const finished=await applyAction(room,'host',{action:'advanceExpiredPhase'});
+  assert.deepEqual(finished.room.photoMetadata,{});
+  assert.equal(publicRoom(finished.room,'host',timestamp+33000).roundPhotos,undefined);
+
+  const exifRoom=playing();const exifStart=await applyAction(exifRoom,'guest',{action:'beginTask',kind:'photo'},timestamp);
+  const exif=new Uint8Array([...jpeg.slice(0,2),0xff,0xe1,0,8,0x45,0x78,0x69,0x66,0,0,...jpeg.slice(2)]);
+  const rejected=await applyAction(exifRoom,'guest',{action:'submitPhoto',taskId:exifStart.result.id,image:'data:image/jpeg;base64,'+Buffer.from(exif).toString('base64')},timestamp+1000);
+  assert.equal(rejected.result.error,'INVALID_PHOTO');
+  assert.equal(exifRoom.photoMetadata?.guest,undefined,'EXIF-bearing images are not stored');
+});
+
+test('photo download endpoint returns bytes only to active seekers in the live round',async()=>{
+  const env={DB:d1(),ALLOWED_ORIGIN:'https://knekkonn.github.io'};
+  const room=playing();room.code='1234';room.roundId='round-1';room.photoMetadata={guest:{playerId:'guest',roundId:'round-1',image:'data:image/jpeg;base64,/9j/AA==',createdAt:Date.now()}};
+  await env.DB.prepare('INSERT INTO rooms(code,revision,state,expires_at) VALUES (?,0,?,?)').bind('1234',JSON.stringify(room),Date.now()+60000).run();
+  const originalFetch=globalThis.fetch;
+  globalThis.fetch=async(url,options)=>new Response(JSON.stringify({users:[{localId:JSON.parse(options.body).idToken}]}),{status:200});
+  try {
+    const request=uid=>new Request('https://api.test/rooms/1234/photos/guest',{headers:{Authorization:`Bearer ${uid}`,Origin:env.ALLOWED_ORIGIN}});
+    const allowed=await worker.fetch(request('host'),env);
+    assert.equal(allowed.status,200);assert.equal(allowed.headers.get('Content-Type'),'image/jpeg');
+    assert.deepEqual([...new Uint8Array(await allowed.arrayBuffer())],[0xff,0xd8,0xff,0x00]);
+    assert.equal((await worker.fetch(request('guest'),env)).status,403,'hiders cannot download the photo endpoint');
+    const state=await env.DB.prepare('SELECT state FROM rooms WHERE code=?').bind('1234').first();
+    const closed=JSON.parse(state.state);closed.phase='finished';
+    await env.DB.prepare('UPDATE rooms SET state=? WHERE code=?').bind(JSON.stringify(closed),'1234').run();
+    assert.equal((await worker.fetch(request('host'),env)).status,403,'photos stop being available once the round ends');
+  } finally {globalThis.fetch=originalFetch;}
+});
+
+test('new round resets player locations and last departure clears all room player data', async () => {
+  const room=playing(); room.phase='finished';room.players.guest.location={lat:1,lng:1};room.photoMetadata={guest:{image:'private'}};
+  await applyAction(room,'host',{action:'newRound'});
+  assert.equal(room.phase,'lobby');assert.equal(room.players.guest.role,'waiting');assert.equal(room.players.guest.location,null);assert.deepEqual(room.photoMetadata,{});
+  await applyAction(room,'host',{action:'leaveRoom'});
+  assert.equal(Object.keys(room.players).length,3,'remaining player data is retained until the room is empty');
+  await applyAction(room,'guest',{action:'leaveRoom'});
+  assert.equal(Object.keys(room.players).length,3,'player records are cleared only after every player has left');
+  await applyAction(room,'other',{action:'leaveRoom'});
+  assert.equal(room.phase,'closed');assert.deepEqual(room.players,{});assert.deepEqual(room.photoMetadata,{});
+});
+test('a host leaving an active round transfers control and is not restored next round', async () => {
+  const room=playing(); room.phase='finished';
+  await applyAction(room,'host',{action:'leaveRoom'});
+  assert.equal(room.hostId,'guest');
+  assert.equal(room.players.host.active,false);
+  await applyAction(room,'guest',{action:'newRound'});
+  assert.equal(room.players.host,undefined);
+  assert.equal(room.players.guest.active,true);
+  assert.equal(room.hostId,'guest');
 });
 test('expired phase deadlines catch up from original timestamps after host downtime', async () => {
   const room=playing(); room.phase='countdown';room.phaseEndsAt=Date.now()-10000000;

@@ -21,12 +21,13 @@ Eine responsive, PWA-fähige Web-App für ein GPS-basiertes Real-Life-Hide-and-S
 - Lobby-Erstellung mit vierstelligem Raumcode und Beitritt über Codename
 - Host-Einstellungen: Classic/Infiziert, Versteckzeit, Matchdauer, Spielradius, Skill-Pool und Gefangen-Meldungen
 - Synchronisierte Countdown-, Rollen-Enthüllungs-, Versteck-, Live-Match- und Endphase
-- Leaflet/OpenStreetMap-Karte mit Dark Tiles, Spielradius, GPS-Punkt, Signal Caches, Täusch-Markern und Fallen
-- Seeker-/Hider-Arsenal, Münzen, Skill-Inventar, Aufgaben, Code-Knacken und Shake-Challenge
+- Leaflet-Karte auf OpenStreetMap-Kacheln ohne Karten-API-Key, mit Spielradius, GPS-Punkt, zufälligen Feldzielen, Signal Caches, Täusch-Markern und Fallen
+- Hider-Aufgaben mit serverseitig geprüften Zielpunkten und Haltezeiten, Doppel-Chiffre, einem Foto vom Versteck pro Runde, Fehlversuch-Cooldown und einmaligen Belohnungen (Worker erforderlich)
+- Seeker-/Hider-Arsenal, Münzen, Skill-Inventar, Catch-Anfrage mit Bestätigung, Rollenwechsel und Ingame-Banner
 - Catch-Anfrage mit Bestätigung am Zielgerät, Classic-Zuschauerstatus, Infiziert-Rollenwechsel und Ingame-Banner
 - Soundeffekte über Web Audio API, optionale Vibration, Reconnect-Feedback, GPS-Fehlerzustände
 - PWA-Manifest und Service Worker für das App-Shell-Caching
-- Lokaler Demo-Modus, der Änderungen im selben Browserprofil über `localStorage` synchronisiert (zum Testen in mehreren Tabs)
+- Lokale Darstellung ohne konfiguriertes Backend; sichere Multiplayer-Aufgaben sind dann deaktiviert
 
 ## Schnell starten
 
@@ -95,7 +96,9 @@ real-life-hide-seek/
 
 - Firebase JavaScript SDK 13.1.0 (dynamischer CDN-Import)
 - Leaflet 1.9.4
-- OpenStreetMap-Daten und CARTO Dark Tiles
+- OpenStreetMap-Kacheln (öffentlicher Kacheldienst, ohne API-Key; Attribution wird auf der Karte angezeigt)
 - Google Fonts (Inter, Barlow Condensed, DM Mono)
 
 Für Offline-Installationen wird das lokale App-Shell gecacht. Firebase-Synchronisierung, Kartentiles, externe Bibliotheken und Google Fonts brauchen weiterhin eine Netzwerkverbindung.
+
+Rundenfotos werden im Worker-Raumzustand begrenzt auf eine Runde gespeichert. Die App re-encodiert Bilder und der Worker lehnt EXIF- und XMP-Metadaten ab. Nur das Suchteam erhält sie während des Live-Matches. Bei Rundenende oder wenn alle den Raum verlassen, werden sie aus dem Raumzustand entfernt. Der Browser kann nicht verhindern, dass Empfänger ein Foto außerhalb der App sichern.
