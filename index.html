@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#080c12">
+  <meta name="description" content="Real Life Hide & Seek – taktisches Multiplayer-Versteckspiel mit GPS, Fähigkeiten und Live-Lobbys.">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="assets/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+  <link rel="stylesheet" href="styles.css">
+  <title>HIDE//SEEK — Real Life Multiplayer</title>
+</head>
+<body>
+  <div class="ambient ambient-a"></div><div class="ambient ambient-b"></div>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="#" aria-label="HIDE SEEK Startseite">
+        <span class="brand-mark"><span></span><span></span><span></span><span></span></span>
+        <span class="brand-name">HIDE<span>//</span>SEEK</span>
+      </a>
+      <div class="topbar-right">
+        <span id="connectionBadge" class="connection-badge"><i></i><span>DEMO-MODUS</span></span>
+        <button id="soundToggle" class="icon-button" type="button" title="Sound ein/aus" aria-label="Sound ein/aus"><span id="soundIcon">♫</span></button>
+        <button id="leaveBtn" class="icon-button hidden" type="button" title="Raum verlassen" aria-label="Raum verlassen">↗</button>
+      </div>
+    </header>
+
+    <main>
+      <section id="entryScreen" class="entry-layout">
+        <div class="hero-panel">
+          <div class="eyebrow"><span class="pulse-dot"></span> FIELD PROTOCOL 01 <span class="eyebrow-line"></span> GPS MULTIPLAYER</div>
+          <h1>Die Stadt ist<br>dein <span class="text-neon">Spielfeld.</span></h1>
+          <p class="hero-copy">Versteck dich. Jage. Überliste deine Freunde. Ein taktisches Real-Life-Spiel, in dem jede Sekunde zählt.</p>
+          <div class="hero-stats">
+            <div><strong>02–20</strong><span>OPERATIVES</span></div>
+            <div><strong>LIVE</strong><span>GPS SYNC</span></div>
+            <div><strong>∞</strong><span>STRATEGIEN</span></div>
+          </div>
+          <div class="hero-grid-art" aria-hidden="true"><div class="grid-cross cross-a"></div><div class="grid-cross cross-b"></div><span class="art-coordinate">52°31' N<br>13°24' E</span><div class="radar-rings"><i></i><i></i><i></i><span></span></div></div>
+        </div>
+
+        <div class="entry-card surface">
+          <div class="card-topline"><span class="tiny-label">OPERATIONS CENTER</span><span class="status-pill"><i></i> BEREIT</span></div>
+          <h2>Mission starten</h2>
+          <p class="muted">Erstelle eine Lobby oder tritt einem laufenden Einsatz bei.</p>
+          <form id="entryForm" class="entry-form">
+            <label for="playerName">Dein Codename</label>
+            <input id="playerName" name="playerName" maxlength="18" minlength="2" placeholder="z. B. NIGHTHAWK" autocomplete="nickname" required>
+            <div class="entry-actions">
+              <button class="button button-primary button-large" id="createRoomBtn" type="button"><span class="button-icon">＋</span> Lobby erstellen</button>
+              <div class="join-divider"><span>ODER</span></div>
+              <label for="roomCode">4-stelliger Raumcode</label>
+              <div class="join-row"><input id="roomCode" name="roomCode" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" placeholder="0427" aria-label="Raumcode"><button class="button button-secondary" id="joinRoomBtn" type="button">Beitreten <span>→</span></button></div>
+            </div>
+          </form>
+          <div class="privacy-note"><span>◈</span><p>GPS wird erst nach deiner Freigabe aktiviert. Spiele fair, bleib in öffentlichen Bereichen und achte auf deine Umgebung.</p></div>
+          <details class="setup-details"><summary>Firebase verbinden</summary><p>Ohne Konfiguration läuft die App im Demo-Modus (dieser Browser und andere Tabs). Für echte Multiplayer-Lobbys trage deine Firebase-Webkonfiguration in <code>js/config.js</code> ein und aktiviere Anonymous Auth sowie Realtime Database.</p></details>
+        </div>
+      </section>
+
+      <section id="lobbyScreen" class="hidden">
+        <div class="page-heading">
+          <div><div class="eyebrow">MISSION CONTROL <span class="eyebrow-line"></span> LOBBY</div><h1>Lobby <span class="text-neon">Setup</span></h1><p class="muted">Konfiguriere den Einsatz und überprüfe dein Team.</p></div>
+          <div class="room-code-card"><span>ROOM CODE</span><strong id="lobbyRoomCode">----</strong><button id="copyCodeBtn" class="copy-button" type="button" title="Raumcode kopieren">▣ Kopieren</button></div>
+        </div>
+        <div class="lobby-grid">
+          <div class="surface settings-panel">
+            <div class="section-heading"><div><span class="section-index">01 /</span><h2>Spielparameter</h2></div><span class="host-label" id="hostBadge">★ HOST</span></div>
+            <div id="hostSettings" class="settings-content">
+              <label class="field-label" for="modeSelect">Spielmodus</label>
+              <div class="mode-picker">
+                <label class="mode-option"><input type="radio" name="mode" value="classic" checked><span class="mode-card"><span class="mode-symbol">◉</span><strong>CLASSIC</strong><small>Gefangene werden Zuschauer</small></span></label>
+                <label class="mode-option"><input type="radio" name="mode" value="infected"><span class="mode-card"><span class="mode-symbol">⌁</span><strong>INFIZIERT</strong><small>Jeder Fang vergrößert das Team</small></span></label>
+              </div>
+              <div class="setting-row role-count-setting"><div><label for="seekerCount">Rollenverteilung</label><small><span id="hiderCountValue">2</span> Hider werden automatisch zugeteilt</small></div><div class="select-wrap"><select id="seekerCount" aria-label="Anzahl der anfänglichen Seeker"><option value="1">1 Seeker</option><option value="2">2 Seeker</option><option value="3">3 Seeker</option><option value="4">4 Seeker</option><option value="5">5 Seeker</option><option value="6">6 Seeker</option><option value="7">7 Seeker</option><option value="8">8 Seeker</option><option value="9">9 Seeker</option><option value="10">10 Seeker</option></select></div></div>
+              <div class="setting-row"><div><label for="hideDuration">Versteck-Phase</label><small>Vorsprung für Hider</small></div><div class="stepper"><button type="button" data-step="hideDuration" data-delta="-60" aria-label="Versteckphase reduzieren">−</button><output id="hideDurationValue">03:00</output><button type="button" data-step="hideDuration" data-delta="60" aria-label="Versteckphase erhöhen">＋</button></div></div>
+              <div class="setting-row"><div><label for="gameDuration">Gesamtspieldauer</label><small>Nach Ende der Versteck-Phase</small></div><div class="stepper"><button type="button" data-step="gameDuration" data-delta="-300" aria-label="Spieldauer reduzieren">−</button><output id="gameDurationValue">20:00</output><button type="button" data-step="gameDuration" data-delta="300" aria-label="Spieldauer erhöhen">＋</button></div></div>
+              <div class="setting-row radius-setting"><div><label for="mapRadius">Spielradius</label><small>Ausgehend vom Host-Standort</small></div><div class="radius-value"><input id="mapRadius" type="range" min="100" max="1500" step="50" value="500"><output id="mapRadiusValue">500 m</output></div></div>
+              <div class="settings-divider"></div>
+              <div class="subsection-title"><span>▣</span><div><strong>Fähigkeiten-Pool</strong><small>Wähle, welche Skills verfügbar sind</small></div></div>
+              <div class="skill-toggles" id="skillToggles">
+                <label class="toggle-line"><span><b>Sonar / Radar-Ping</b><small>Seeker: Hider für 5 Sekunden orten</small></span><input type="checkbox" data-skill="sonar" checked><i></i></label>
+                <label class="toggle-line"><span><b>GPS-Tracker</b><small>Seeker: nächsten Hider 60 Sekunden verfolgen</small></span><input type="checkbox" data-skill="tracker" checked><i></i></label>
+                <label class="toggle-line"><span><b>Radar-Jammer</b><small>Seeker: Hider-Radar 45 Sekunden stören</small></span><input type="checkbox" data-skill="jammer" checked><i></i></label>
+                <label class="toggle-line"><span><b>Sprint-Alarm</b><small>Seeker: Bewegungsalarm aktivieren</small></span><input type="checkbox" data-skill="sprint" checked><i></i></label>
+                <label class="toggle-line"><span><b>Fallen-Räumer</b><small>Seeker: digitale Fallen entfernen</small></span><input type="checkbox" data-skill="sweeper" checked><i></i></label>
+                <label class="toggle-line"><span><b>Kompass-Pfeil</b><small>Seeker: entferntesten Hider anpeilen</small></span><input type="checkbox" data-skill="compass" checked><i></i></label>
+                <label class="toggle-line"><span><b>Geist-Modus</b><small>Hider: GPS-Signatur 45 Sekunden verbergen</small></span><input type="checkbox" data-skill="ghost" checked><i></i></label>
+                <label class="toggle-line"><span><b>Täusch-Ping</b><small>Hider: falschen Marker setzen</small></span><input type="checkbox" data-skill="decoy" checked><i></i></label>
+                <label class="toggle-line"><span><b>Digitale Falle / EMP</b><small>Hider: Seeker in der Nähe stören</small></span><input type="checkbox" data-skill="trap" checked><i></i></label>
+                <label class="toggle-line"><span><b>Schild / Zweite Chance</b><small>Hider: ersten Fangversuch abwehren</small></span><input type="checkbox" data-skill="shield" checked><i></i></label>
+                <label class="toggle-line"><span><b>Seeker-Radar</b><small>Hider: Seeker 10 Sekunden lokalisieren</small></span><input type="checkbox" data-skill="seekerradar" checked><i></i></label>
+                <label class="toggle-line"><span><b>Leise Sohlen</b><small>Hider: keine Nähewarnungen für 2 Minuten</small></span><input type="checkbox" data-skill="silent" checked><i></i></label>
+              </div>
+              <div class="settings-divider"></div>
+              <label class="toggle-line announcement-toggle"><span><b>Gefangen-Meldungen</b><small>Banner und Alarm-Sound für alle Spieler</small></span><input id="announcementsToggle" type="checkbox" checked><i></i></label>
+            </div>
+            <div id="guestSettingsNote" class="guest-note hidden">Nur der Host kann die Einstellungen ändern.</div>
+          </div>
+          <aside class="surface team-panel">
+            <div class="section-heading"><div><span class="section-index">02 /</span><h2>Dein Team</h2></div><span class="player-count" id="lobbyPlayerCount">1 / 20</span></div>
+            <div class="team-progress"><span id="teamProgressBar"></span></div>
+            <div id="lobbyPlayers" class="lobby-players"></div>
+            <div class="team-footer"><span class="tiny-label">LOBBY STATUS</span><span class="waiting-status"><i></i> Warte auf Spieler</span></div>
+            <button id="startGameBtn" class="button button-primary button-large full-width" type="button">Einsatz starten <span>↗</span></button>
+            <p id="startHint" class="micro-copy">Mindestens 2 Spieler erforderlich.</p>
+            <div class="lobby-warning"><span>⚠</span><p>Spielt nur in sicheren, öffentlichen Bereichen. Kein Rennen über Straßen, kein Betreten privater Grundstücke.</p></div>
+          </aside>
+        </div>
+      </section>
+
+      <section id="gameScreen" class="hidden">
+        <div class="game-topline">
+          <div class="mission-status"><span id="phaseDot" class="phase-dot"></span><span id="phaseLabel">LIVE MATCH</span><span class="live-tag">● LIVE</span></div>
+          <div class="game-top-right"><span class="game-room-code">ROOM <b id="gameRoomCode">----</b></span><button id="gpsBtn" class="gps-button" type="button"><span>◎</span> GPS aktivieren</button></div>
+        </div>
+        <div class="game-heading"><div><div class="eyebrow">TACTICAL FIELD <span class="eyebrow-line"></span> <span id="gameModeTag">CLASSIC MODE</span></div><h1 id="gameGreeting">Willkommen, Operative.</h1><p id="gameSubheading" class="muted">Die Mission beginnt.</p></div><div class="timer-card"><span id="timerCaption">MATCH TIMER</span><strong id="matchTimer">20:00</strong><div class="timer-track"><span id="timerProgress"></span></div></div></div>
+        <div id="roleReveal" class="role-reveal hidden"><div class="reveal-scan"></div><span class="reveal-kicker">IDENTITY CONFIRMED</span><div id="roleRevealSymbol" class="role-reveal-symbol">◉</div><h2 id="roleRevealTitle">DU BIST HIDER</h2><p id="roleRevealCopy">Bewege dich unauffällig. Deine Mission beginnt jetzt.</p><button id="dismissRevealBtn" type="button" class="button button-secondary">Verstanden <span>→</span></button></div>
+        <div id="hideFreeze" class="freeze-overlay hidden"><div class="freeze-content"><div class="freeze-icon">⌁</div><div class="eyebrow">SEEKER LOCKDOWN</div><h2>Bleib auf<br><span class="text-neon">Position.</span></h2><p>Die Hider bekommen einen Vorsprung. Deine Karte bleibt gesperrt, bis die Zeit abgelaufen ist.</p><div class="freeze-countdown" id="freezeTimer">03:00</div><div class="freeze-sub">SUCHPHASE WIRD VORBEREITET</div></div></div>
+        <div class="game-layout">
+          <div class="main-game-column">
+            <div class="surface map-panel">
+              <div class="panel-heading"><div><span class="panel-icon">⌖</span><div><h2>Tactical Map</h2><small id="mapCaption">GPS wartet auf Freigabe</small></div></div><div class="map-actions"><span class="map-radius-chip" id="mapRadiusChip">RADIUS 500 M</span><button id="recenterMapBtn" class="small-icon-button" type="button" aria-label="Karte zentrieren" title="Karte zentrieren">◎</button></div></div>
+              <div id="map" aria-label="Taktische Karte"></div>
+              <div class="map-legend"><span><i class="legend-dot self-dot"></i> Du</span><span><i class="legend-dot seeker-dot"></i> Seeker</span><span><i class="legend-dot hider-dot"></i> Hider (Ping)</span><span><i class="legend-square"></i> Itembox</span></div>
+              <div id="mapNotice" class="map-notice"><span>◎</span><div><strong>GPS noch nicht aktiv</strong><small>Standort freigeben, um deine Position auf der Karte anzuzeigen.</small></div><button id="mapGpsBtn" type="button">Aktivieren</button></div>
+            </div>
+            <div class="game-tabs" role="tablist" aria-label="Spielbereiche">
+              <button class="game-tab active" type="button" data-tab="mapTab" role="tab" aria-selected="true"><span>⌖</span> Karte</button>
+              <button class="game-tab" type="button" data-tab="shopTab" role="tab" aria-selected="false"><span>◇</span> Arsenal <b id="coinBadge">0 ◈</b></button>
+              <button class="game-tab" type="button" data-tab="tasksTab" role="tab" aria-selected="false"><span>▤</span> Aufgaben</button>
+              <button class="game-tab" type="button" data-tab="statusTab" role="tab" aria-selected="false"><span>▦</span> Status</button>
+            </div>
+            <div id="mapTab" class="tab-content active" role="tabpanel">
+              <div class="surface quick-actions-panel"><div class="panel-heading simple-heading"><div><span class="panel-icon">⌁</span><div><h2>Field Actions</h2><small>Schnellzugriff auf deine taktischen Optionen</small></div></div><span class="tiny-label" id="roleChip">HIDER</span></div><div id="quickActions" class="quick-actions"></div></div>
+            </div>
+            <div id="shopTab" class="tab-content hidden" role="tabpanel"><div class="surface content-panel"><div class="section-heading"><div><span class="section-index">03 /</span><h2>Arsenal & Skills</h2></div><span class="coin-counter" id="shopCoinCounter">0 ◈</span></div><p class="muted">Kaufe Einmal-Fähigkeiten mit gesammelten Credits und aktiviere sie taktisch.</p><div id="shopGrid" class="shop-grid"></div><div id="inventoryPanel" class="inventory-panel"></div></div></div>
+            <div id="tasksTab" class="tab-content hidden" role="tabpanel"><div class="surface content-panel"><div class="section-heading"><div><span class="section-index">04 /</span><h2>Field Tasks</h2></div><span class="task-reward">+ Credits</span></div><p class="muted">Löse eine kurze Aufgabe, um Münzen zu verdienen und weitere Fähigkeiten freizuschalten.</p><div class="task-card"><div class="task-art">⌗</div><div class="task-info"><span class="tiny-label">LOGIC PROTOCOL / 01</span><h3>Code knacken</h3><p>Entschlüssele den Zahlencode. Ein gelöster Task bringt Credits.</p><div class="task-meta"><span>◷ 20–40 SEK.</span><span>◈ +25 CREDITS</span></div></div><button id="startTaskBtn" class="button button-secondary" type="button">Starten <span>→</span></button></div><div class="task-card"><div class="task-art task-art-alt">ϟ</div><div class="task-info"><span class="tiny-label">MOVEMENT PROTOCOL / 02</span><h3>Shake Challenge</h3><p>Schüttle dein Gerät. Auf Desktop kannst du die Challenge per Tastenklick simulieren.</p><div class="task-meta"><span>◷ 10 SEK.</span><span>◈ +15 CREDITS</span></div></div><button id="startShakeBtn" class="button button-secondary" type="button">Starten <span>→</span></button></div></div></div>
+            <div id="statusTab" class="tab-content hidden" role="tabpanel"><div class="surface content-panel"><div class="section-heading"><div><span class="section-index">05 /</span><h2>Mission Status</h2></div><span class="tiny-label">LIVE ROSTER</span></div><div id="leaderboard" class="leaderboard"></div></div></div>
+          </div>
+          <aside class="side-game-column">
+            <div class="surface operative-card"><div class="operative-card-top"><span class="tiny-label">OPERATIVE PROFILE</span><span class="online-dot"></span></div><div class="operative-avatar" id="operativeAvatar">N</div><h2 id="operativeName">NIGHTHAWK</h2><span id="operativeRole" class="role-chip role-hider">HIDER</span><div class="operative-stats"><div><span>◈</span><strong id="operativeCoins">0</strong><small>CREDITS</small></div><div><span>⌖</span><strong id="operativeItems">1</strong><small>SKILLS</small></div></div><div class="operative-skill"><div><span>ACTIVE SKILL</span><strong id="activeSkillName">—</strong></div><span id="activeSkillIcon" class="active-skill-icon">◇</span></div><button id="activateSkillBtn" class="button button-primary full-width" type="button">Fähigkeit einsetzen <span>↗</span></button></div>
+            <div class="surface roster-card"><div class="panel-heading simple-heading"><div><span class="panel-icon">▦</span><div><h2>Operatives</h2><small>Mission roster</small></div></div><span class="player-count" id="gamePlayerCount">0</span></div><div id="sideRoster" class="side-roster"></div></div>
+            <div class="surface itembox-card"><div class="panel-heading simple-heading"><div><span class="panel-icon">▣</span><div><h2>Signal Caches</h2><small>Itemboxen in deiner Nähe</small></div></div></div><div id="nearbyItems" class="nearby-items"><div class="empty-state">GPS wird benötigt, um Caches in der Nähe zu finden.</div></div></div>
+            <div id="catchPanel" class="surface catch-panel"><div class="catch-panel-top"><span class="catch-icon">⊕</span><div><h2>Hider gefangen?</h2><p>Nur bei tatsächlicher Begegnung melden.</p></div></div><button id="catchBtn" class="button button-danger full-width" type="button">Fang bestätigen <span>↗</span></button><small>Der Hider muss den Fang auf seinem Gerät bestätigen.</small></div>
+          </aside>
+        </div>
+        <div id="spectatorBanner" class="spectator-banner hidden"><strong>MISSION ENDED FOR YOU</strong><span>Du bist Zuschauer. Verfolge den Spielstand, bis die Runde endet.</span></div>
+      </section>
+    </main>
+
+    <footer class="app-footer"><span>HIDE//SEEK <b>FIELD SYSTEMS</b></span><span>PLAY SMART. STAY SAFE. <i>●</i></span></footer>
+  </div>
+
+  <div id="toastRegion" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+  <div id="modalRoot" class="modal-root hidden" role="dialog" aria-modal="true" aria-labelledby="modalTitle"><div class="modal-backdrop" data-close-modal></div><div class="modal-card surface"><button class="modal-close" id="modalCloseBtn" type="button" aria-label="Dialog schließen">×</button><span class="tiny-label" id="modalKicker">FIELD PROTOCOL</span><h2 id="modalTitle">Bestätigung</h2><div id="modalBody"></div><div id="modalActions" class="modal-actions"></div></div></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
