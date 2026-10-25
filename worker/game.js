@@ -3,11 +3,12 @@ import { normalizeRoom } from '../js/transactions.js';
 import { evaluateZone, validPoint } from '../js/gps.js';
 import { distanceMeters, bearingDegrees, destinationPoint } from '../js/utils.js';
 import { findSafeItemLocations } from './itembox.js';
+import { skillTuning } from '../js/skills.js';
 
 export function publicRoom(source, uid, timestamp=Date.now()) {
   const room = structuredClone(source);
   const self = room.players?.[uid];
-  if (!self) {
+  if (!self || self.status==='left') {
     if (room.joinRequests?.[uid]) return {code:room.code,phase:'pending',players:{},settings:{}};
     throw new Error('NOT_MEMBER');
   }
@@ -21,6 +22,8 @@ export function publicRoom(source, uid, timestamp=Date.now()) {
   } else delete room.roundPhotos;
   if (self.activeTask) { delete self.activeTask.answer; delete self.activeTask.shift; }
   delete room.processedActions;
+  if(room.phase!=='finished') delete room.roundTracks;
+  else room.roundTracks=Object.fromEntries(Object.entries(room.roundTracks||{}).map(([id,track])=>[id,{distanceMeters:Number(track.distanceMeters)||0,points:(Array.isArray(track.points)?track.points:[]).filter(point=>Array.isArray(point)&&point.length===2&&point.every(Number.isFinite)&&Math.abs(point[0])<=90&&Math.abs(point[1])<=180).slice(-240)}]));
   if (room.hostId !== uid) delete room.joinRequests;
   if (room.announcement?.type === 'private' && room.announcement.targetId !== uid) delete room.announcement;
   if (room.announcementForSeeker?.targetId !== uid) delete room.announcementForSeeker;
@@ -43,6 +46,7 @@ export function publicRoom(source, uid, timestamp=Date.now()) {
     }
     // Public score/role remain visible; private inventory, effects and zone evidence do not.
     delete player.inventory; delete player.effects; delete player.zone; delete player.previousStatus; delete player.activeTask; delete player.taskCooldownUntil;
+    delete player._stayAnchor; delete player.stationarySince; delete player.rewardAt; delete player.hiderStartedAt;
     if (player.id === uid) { /* own task and cooldown remain private to the requesting player */ }
   }
   room.traps = Object.fromEntries(Object.entries(room.traps || {}).filter(([,trap]) => trap.ownerId === uid));
@@ -72,6 +76,7 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
   }
   if (action === 'leaveRoom' && room.joinRequests?.[uid] && !room.players[uid]) { delete room.joinRequests[uid]; return {room,result:true}; }
   const player = member(room,uid);
+  if(room.phase==='playing') game.awardElapsedHiderPoints(room,Math.min(timestamp,Number(room.matchEndsAt)||timestamp));
   if (room.phase === 'playing' && (player.effects?.frozenUntil || 0)>timestamp && !['updatePlayerLocation','leaveRoom'].includes(action)) throw new Error('FROZEN');
   if (room.phase === 'closed' && action !== 'leaveRoom') throw new Error('LOBBY_CLOSED');
   if (action === 'approveJoin') {
@@ -86,10 +91,11 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
   if (action === 'newRound') {
     host(room,uid); if (room.phase !== 'finished') throw new Error('ROUND_NOT_FINISHED');
     room.phase='lobby'; room.phaseEndsAt=null; room.matchEndsAt=null; room.pendingCatch=null; room.announcement=null; room.winner=null;
-    room.challenges={}; room.itemBoxes={}; room.objectives={}; room.traps={}; room.decoys={}; room.effects={}; room.photoMetadata={};
+    room.challenges={}; room.itemBoxes={}; room.objectives={}; room.traps={}; room.decoys={}; room.effects={}; room.photoMetadata={}; room.roundTracks={};
     for (const [id,p] of Object.entries(room.players)) if (!p.active || p.status==='left') delete room.players[id];
     room.roundId=crypto.randomUUID();
-    for (const p of Object.values(room.players)) { p.active=true; p.role='waiting'; p.status='waiting'; p.coins=0; p.inventory=[]; p.effects={}; p.location=null; p.locationAt=0; p.activeTask=null; p.taskCooldownUntil=0; p.foundItems=0; p.tasksSolved=0; p.zone={violations:0}; }
+    room.roundResults=[]; room.roundAchievements=[];
+    for (const p of Object.values(room.players)) { p.active=true; p.role='waiting'; p.status='waiting'; p.coins=0; p.score=0; p.hidersFound=0; p.skillsUsed=0; p.longestStaySeconds=0; p.hiddenSeconds=0; p.stationarySince=0; p._stayAnchor=null; p.hiderStartedAt=0; p.rewardAt=timestamp; p.inventory=[]; p.effects={}; p.location=null; p.locationAt=0; p.activeTask=null; p.taskCooldownUntil=0; p.foundItems=0; p.tasksSolved=0; p.zone={violations:0}; }
     return {room,result:true};
   }
   if (action === 'settings') { host(room,uid); return {room:game.updateSettings(room,uid,input.patch || {}),result:true}; }
@@ -99,7 +105,7 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
     const result = game.startCountdown(room,uid,null);
     room.objectives=Object.fromEntries(Array.from({length:5},(_,i)=>[String(i),{id:String(i),location:gameRandomPoint(room.settings.center,room.settings.radius)}]));
     if (!result.ok) throw new Error(result.reason);
-    room.roundId=crypto.randomUUID(); room.photoMetadata={};
+    room.roundId=crypto.randomUUID(); room.photoMetadata={}; room.roundTracks={};
     return {room,result:true};
   }
   let result;
@@ -120,6 +126,7 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
         if (zone.violations % 3 === 0) player.effects.frozenUntil=timestamp+30000;
       }
       player.zone=zone;
+      recordRoundTrack(room,player,location,timestamp);
       if (player.activeTask && !player.activeTask.completed && !player.activeTask.failed) {
         const task=player.activeTask;
         if (timestamp>task.expiresAt || task.kind==='stay' && (timestamp-task.lastProofAt>10000 || distanceMeters(location,task.targetLocation)>15)) failTask(player,timestamp);
@@ -137,7 +144,7 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
     }
     case 'buySkill': result=await game.buySkill(context,uid,input.skillId); break;
     case 'activateSkill': {
-      if (input.skillId === 'decoy' && (!validPoint(input.params?.location) || distanceMeters(input.params.location,room.settings.center) > room.settings.radius)) throw new Error('INVALID_POINT');
+      if (input.skillId === 'decoy' && (!validPoint(input.params?.location) || distanceMeters(input.params.location,room.settings.center) > skillTuning('decoy',room.settings.radius).decoyRange)) throw new Error('INVALID_POINT');
       if (['tracker','compass','trap','sweeper'].includes(input.skillId) && timestamp-(player.locationAt || 0)>10000) throw new Error('FRESH_GPS_REQUIRED');
       for (const candidate of Object.values(room.players)) if (candidate.id !== uid && timestamp-(candidate.locationAt || 0)>10000) candidate.location=null;
       result=await game.activateSkill(context,uid,input.skillId,input.params || {}); break;
@@ -217,7 +224,7 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
       if(room.photoMetadata) delete room.photoMetadata[uid];
       result=true;
       if (Object.values(room.players).every(p=>!p.active || p.status==='left')) {
-        room.phase='closed'; room.closedAt=timestamp; room.players={}; room.hostId=null; room.joinRequests={}; room.challenges={}; room.objectives={}; room.traps={}; room.decoys={}; room.itemBoxes={}; room.effects={}; room.photoMetadata={}; room.eventLog=[]; room.pendingCatch=null; room.announcement=null; room.announcementForSeeker=null; room.winner=null; room.startedAt=null; room.matchEndsAt=null; room.settings.center=null; delete room.roundPhotos;
+        room.phase='closed'; room.closedAt=timestamp; room.players={}; room.hostId=null; room.joinRequests={}; room.challenges={}; room.objectives={}; room.traps={}; room.decoys={}; room.itemBoxes={}; room.effects={}; room.photoMetadata={}; room.roundTracks={}; room.roundResults=[]; room.roundAchievements=[]; room.eventLog=[]; room.pendingCatch=null; room.announcement=null; room.announcementForSeeker=null; room.winner=null; room.startedAt=null; room.matchEndsAt=null; room.settings.center=null; delete room.roundPhotos;
       }
       break;
     default: throw new Error('UNKNOWN_ACTION');
@@ -229,6 +236,7 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
 
 export async function settlePhases(room, fetchImpl=fetch) {
   const context = {room};
+  game.awardElapsedHiderPoints(room,Math.min(Date.now(),Number(room.matchEndsAt)||Date.now()));
   for (let i=0;i<5;i++) {
     if (!context.room.phaseEndsAt || context.room.phaseEndsAt>Date.now()) break;
     const previous=context.room.phase;
@@ -245,6 +253,23 @@ export async function settlePhases(room, fetchImpl=fetch) {
   }
   if(context.room.phase==='finished') context.room.photoMetadata={};
   return context.room;
+}
+
+function recordRoundTrack(room,player,location,timestamp) {
+  if(!['hide','playing'].includes(room.phase) || !player.active || !['hider','seeker'].includes(player.role) || Number(location.accuracy)>50) return;
+  room.roundTracks ||= {};
+  const track=room.roundTracks[player.id] ||= {points:[],distanceMeters:0};
+  const last=track.points.at(-1);
+  const point=[Number(location.lat),Number(location.lng)];
+  if(last) {
+    const elapsed=timestamp-(Number(track.lastAt)||0);
+    const distance=distanceMeters({lat:last[0],lng:last[1]},{lat:point[0],lng:point[1]});
+    if(elapsed<15000 && distance<12) return;
+    track.distanceMeters=Math.round((Number(track.distanceMeters)||0)+distance);
+    if(track.points.length>=240) track.points=track.points.filter((_,index)=>index===0 || index%2===0);
+  }
+  track.points.push(point);
+  track.lastAt=timestamp;
 }
 
 function failTask(player,timestamp) { if (!player.activeTask) return; player.activeTask.failed=true; player.taskCooldownUntil=timestamp+120000; }

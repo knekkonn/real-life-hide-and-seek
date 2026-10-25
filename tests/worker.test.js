@@ -7,6 +7,7 @@ import { applyAction, publicRoom, settlePhases } from '../worker/game.js';
 import { authenticate } from '../worker/auth.js';
 import { createRoomData, addPlayerToRoom } from '../js/game-service.js';
 import { findSafeItemLocations } from '../worker/itembox.js';
+import { skillTuning } from '../js/skills.js';
 
 function playing() {
   const room=createRoomData('host','HOST'); room.code='1234';
@@ -50,6 +51,55 @@ test('a verified in-range catch is applied immediately without target confirmati
   assert.equal(room.players.guest.status,'infected');
   await assert.rejects(applyAction(room,'guest',{action:'respondToCatch',accepted:true,requestId:'legacy'}),/UNKNOWN_ACTION/);
   await assert.rejects(applyAction(room,'host',{action:'requestCatch',targetId:'guest'}),/TARGET_NOT_CATCHABLE/);
+});
+
+test('player paths stay private until the round ends and are sanitized in the final room view', async () => {
+  const room=playing(); const now=Date.now(); room.roundTracks={}; room.matchEndsAt=now+600000;
+  await applyAction(room,'guest',{action:'updatePlayerLocation',location:{lat:.001,lng:.002,accuracy:5,measuredAt:now}},now);
+  assert.deepEqual(room.roundTracks.guest.points,[[.001,.002]]);
+  assert.equal(publicRoom(room,'host',now).roundTracks,undefined,'live location trails are hidden from every member');
+  room.roundTracks.guest.points.push([.0012,.0022]); room.roundTracks.guest.lastAt=now+5000;
+  room.phase='finished';
+  const result=publicRoom(room,'host',now+5000);
+  assert.deepEqual(result.roundTracks.guest.points,[[.001,.002],[.0012,.0022]]);
+  assert.equal(result.roundTracks.guest.lastAt,undefined,'raw sample timestamps stay private');
+  room.players.guest.status='left';
+  assert.throws(()=>publicRoom(room,'guest',now+5000),/NOT_MEMBER/,'players who left cannot reopen the room to read trails');
+});
+
+test('hiders earn one point for each full minute exactly once on server settlement', async () => {
+  const room=playing(); const started=Date.now()-125000;
+  room.matchEndsAt=Date.now()+600000;
+  for(const player of [room.players.guest,room.players.other]) { player.hiderStartedAt=started; player.rewardAt=started; }
+  await applyAction(room,'guest',{action:'updatePlayerLocation',location:{lat:0,lng:0,accuracy:5,measuredAt:Date.now()}},started+125000);
+  assert.equal(room.players.guest.score,2);
+  assert.equal(room.players.guest.hiddenSeconds,120);
+  await applyAction(room,'guest',{action:'updatePlayerLocation',location:{lat:0,lng:0,accuracy:5,measuredAt:Date.now()}},started+125000);
+  assert.equal(room.players.guest.score,2,'repeated requests cannot duplicate paid minutes');
+  await applyAction(room,'host',{action:'updatePlayerLocation',location:{lat:0,lng:0,accuracy:5,measuredAt:Date.now()}},started+125000);
+  assert.equal(room.players.host.score,0,'seekers do not receive hider survival points');
+});
+
+test('every confirmed catch rewards the seeker and writes round awards and results', async () => {
+  const room=playing(); const started=Date.now()-125000;
+  room.matchEndsAt=Date.now()+600000;
+  for(const player of [room.players.guest,room.players.other]) { player.hiderStartedAt=started; player.rewardAt=started; }
+  await applyAction(room,'host',{action:'requestCatch',targetId:'guest'});
+  assert.equal(room.players.host.hidersFound,1);
+  assert.ok(room.players.host.coins>=30);
+  assert.ok(room.players.host.score>=50);
+  await applyAction(room,'host',{action:'requestCatch',targetId:'other'});
+  assert.equal(room.phase,'finished');
+  assert.ok(room.roundResults.some(row=>row.id==='host'&&row.hidersFound===2));
+  assert.ok(room.roundAchievements.some(award=>award.title==='Fangmaschine'&&award.playerId==='host'));
+  assert.ok(room.roundResults.find(row=>row.id==='guest').score>=2);
+});
+
+test('skill prices and active ranges follow strength and playzone scale', () => {
+  const compact=skillTuning('sweeper',200), wide=skillTuning('sweeper',1800);
+  assert.ok(wide.price>compact.price);
+  assert.ok(wide.sweepRadius>compact.sweepRadius);
+  assert.ok(skillTuning('shield',1000).price>skillTuning('sprint',1000).price,'stronger effects cost more');
 });
 test('catch requires fresh accurate positions within the allowed radius', async () => {
   const room=playing();
@@ -192,16 +242,16 @@ test('photo download endpoint returns bytes only to active seekers in the live r
   } finally {globalThis.fetch=originalFetch;}
 });
 
-test('new round resets player locations and last departure clears all room player data', async () => {
-  const room=playing(); room.phase='finished';room.players.guest.location={lat:1,lng:1};room.photoMetadata={guest:{image:'private'}};
+test('new round resets player locations and tracks and last departure clears all room player data', async () => {
+  const room=playing(); room.phase='finished';room.players.guest.location={lat:1,lng:1};room.photoMetadata={guest:{image:'private'}};room.roundTracks={guest:{points:[[1,1],[1.1,1.1]]}};
   await applyAction(room,'host',{action:'newRound'});
-  assert.equal(room.phase,'lobby');assert.equal(room.players.guest.role,'waiting');assert.equal(room.players.guest.location,null);assert.deepEqual(room.photoMetadata,{});
+  assert.equal(room.phase,'lobby');assert.equal(room.players.guest.role,'waiting');assert.equal(room.players.guest.location,null);assert.deepEqual(room.photoMetadata,{});assert.deepEqual(room.roundTracks,{});
   await applyAction(room,'host',{action:'leaveRoom'});
   assert.equal(Object.keys(room.players).length,3,'remaining player data is retained until the room is empty');
   await applyAction(room,'guest',{action:'leaveRoom'});
   assert.equal(Object.keys(room.players).length,3,'player records are cleared only after every player has left');
   await applyAction(room,'other',{action:'leaveRoom'});
-  assert.equal(room.phase,'closed');assert.deepEqual(room.players,{});assert.deepEqual(room.photoMetadata,{});assert.equal(room.hostId,null);assert.equal(room.settings.center,null);
+  assert.equal(room.phase,'closed');assert.deepEqual(room.players,{});assert.deepEqual(room.photoMetadata,{});assert.deepEqual(room.roundTracks,{});assert.equal(room.hostId,null);assert.equal(room.settings.center,null);
 });
 test('a host leaving an active round transfers control and is not restored next round', async () => {
   const room=playing(); room.phase='finished';

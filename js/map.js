@@ -10,6 +10,11 @@ let userMarker = null;
 let userCircle = null;
 let boundsWasFit = false;
 let compassOverlay = null;
+let roundTrackMap = null;
+let roundTrackLayers = [];
+let roundTrackFrame = null;
+let roundTrackSignature = '';
+const TRACK_COLORS = ['#49d7ff','#ff718d','#c9ff54','#b88cff','#ffbe5c','#62e6bc','#ff78d4','#89a9ff','#e8ec73','#ff9468'];
 
 function markerIcon(kind) {
   return L.divIcon({ className:'custom-map-marker', html:`<div class="map-marker-core ${kind}"></div>`, iconSize:[20,20], iconAnchor:[10,10] });
@@ -188,6 +193,74 @@ export function resetMap() {
 }
 
 export function getMap() { return map; }
+
+function trackColor(id) {
+  let hash=0;
+  for(const character of String(id)) hash=(hash*31+character.charCodeAt(0))|0;
+  return TRACK_COLORS[Math.abs(hash)%TRACK_COLORS.length];
+}
+
+export function drawRoundTracks(roundId, tracks, players) {
+  const mapElement=document.getElementById('roundTrackMap');
+  const empty=document.getElementById('roundTrackEmpty');
+  const legend=document.getElementById('roundTrackLegend');
+  if(!mapElement || !empty || !legend || !window.L) return;
+  const entries=Object.entries(tracks||{}).map(([id,track])=>({id,track,points:(track.points||[]).filter(point=>Array.isArray(point)&&point.length===2&&point.every(Number.isFinite)).map(([lat,lng])=>[lat,lng])})).filter(item=>item.points.length>1);
+  const signature=String(roundId)+JSON.stringify(entries.map(({id,track,points})=>[id,points.length,points[0],points.at(-1),track.distanceMeters]));
+  if(signature===roundTrackSignature) { if(roundTrackMap) requestAnimationFrame(()=>roundTrackMap.invalidateSize()); return; }
+  roundTrackSignature=signature;
+  if(roundTrackFrame!==null) cancelAnimationFrame(roundTrackFrame);
+  for(const layer of roundTrackLayers) roundTrackMap?.removeLayer(layer);
+  roundTrackLayers=[];
+  if(!entries.length) {
+    mapElement.classList.add('hidden'); empty.classList.remove('hidden'); legend.innerHTML='';
+    return;
+  }
+  empty.classList.add('hidden'); mapElement.classList.remove('hidden');
+  if(!roundTrackMap) {
+    roundTrackMap=L.map(mapElement,{zoomControl:true,preferCanvas:true,scrollWheelZoom:false}).setView([52.52,13.405],12);
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',subdomains:'abc',maxZoom:20}).addTo(roundTrackMap);
+  }
+  const bounds=L.latLngBounds([]);
+  legend.innerHTML=entries.map(({id,track,points})=>{
+    const color=trackColor(id), name=players?.[id]?.name||'Operative', km=((Number(track.distanceMeters)||0)/1000).toFixed(2);
+    points.forEach(point=>bounds.extend(point));
+    const line=L.polyline([],{color,weight:4,opacity:.9,lineCap:'round',lineJoin:'round'}).addTo(roundTrackMap);
+    const start=L.circleMarker(points[0],{radius:5,color:'#08111a',weight:2,fillColor:color,fillOpacity:1}).addTo(roundTrackMap).bindTooltip(`${escapeHTML(name)} · Start`);
+    const finish=L.circleMarker(points.at(-1),{radius:6,color:'#ffffff',weight:2,fillColor:color,fillOpacity:1}).addTo(roundTrackMap).bindTooltip(`${escapeHTML(name)} · Ziel`);
+    roundTrackLayers.push(line,start,finish);
+    return `<span class="round-track-key"><i style="--track-color:${color}"></i><strong>${escapeHTML(name)}</strong><small>${km} km</small></span>`;
+  }).join('');
+  roundTrackMap.fitBounds(bounds.pad(.14),{maxZoom:16,animate:false});
+  requestAnimationFrame(()=>roundTrackMap.invalidateSize());
+  if(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+    for(const {id,points} of entries) roundTrackLayers.find(layer=>layer instanceof L.Polyline && layer.options.color===trackColor(id))?.setLatLngs(points);
+    return;
+  }
+  const maxLength=Math.max(...entries.map(({points})=>points.length));
+  let step=1;
+  const animate=()=>{
+    const amount=Math.max(2,Math.ceil((step/maxLength)*maxLength));
+    for(const {id,points} of entries) {
+      const line=roundTrackLayers.find(layer=>layer instanceof L.Polyline && layer.options.color===trackColor(id));
+      if(line) line.setLatLngs(points.slice(0,Math.min(points.length,amount)));
+    }
+    step+=Math.max(1,Math.ceil(maxLength/90));
+    if(step<=maxLength) roundTrackFrame=requestAnimationFrame(animate);
+    else roundTrackFrame=null;
+  };
+  roundTrackFrame=requestAnimationFrame(animate);
+}
+
+export function clearRoundTracks() {
+  if(roundTrackFrame!==null) cancelAnimationFrame(roundTrackFrame);
+  roundTrackFrame=null; roundTrackSignature='';
+  for(const layer of roundTrackLayers) roundTrackMap?.removeLayer(layer);
+  roundTrackLayers=[];
+  document.getElementById('roundTrackMap')?.classList.add('hidden');
+  document.getElementById('roundTrackEmpty')?.classList.remove('hidden');
+  const legend=document.getElementById('roundTrackLegend'); if(legend) legend.innerHTML='';
+}
 
 let lobbyMap = null;
 let lobbyCircle = null;
