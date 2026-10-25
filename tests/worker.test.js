@@ -148,18 +148,19 @@ test('forged reward submissions cannot award currency', async () => {
   await assert.rejects(applyAction(room,'guest',{action:'completeTask',kind:'code',proof:{id:'forged',answer:42}}),/INVALID_CHALLENGE/);
   assert.equal(room.players.guest.coins,before);
 });
-test('server-issued Vigenere and columnar ciphers are private, rate-limited and redeem once', async () => {
+test('server-issued Vigenere cipher is guided, private, rate-limited and redeemable once', async () => {
   const room=playing(); const timestamp=Date.now();
   const {result}=await applyAction(room,'guest',{action:'beginTask',kind:'cipher'},timestamp);
   const challenge=room.players.guest.activeTask;
-  assert.match(result.prompt,/Vigenère rückwärts/);
-  assert.match(result.prompt,/Spaltentransposition/);
-  const key=result.prompt.match(/Schlüssel: ([A-Z]+)/)[1];
-  const order=result.prompt.match(/Reihenfolge: ([1-4]–[1-4]–[1-4]–[1-4])/)[1].split('–').map(n=>Number(n)-1);
-  const ciphertext=result.prompt.match(/VERSCHLÜSSELTER TEXT: ([A-Z]{12})/)[1];
-  const transposed=Array.from(ciphertext,(char,i)=>String.fromCharCode(65+(char.charCodeAt(0)-65-(key.charCodeAt(i%key.length)-65)+26)%26)).join('');
-  const grid=Array(12);let cursor=0;for(const col of order)for(let row=0;row<3;row++)grid[row*4+col]=transposed[cursor++];
-  assert.equal(grid.join(''),challenge.answer,'published instructions must decode the server-held code');
+  assert.match(result.prompt,/Vigenère/);
+  assert.match(result.prompt,/Ziehe an jeder Stelle/);
+  assert.match(result.prompt,/Beispiel: C minus B ergibt B/);
+  assert.doesNotMatch(result.prompt,/Spaltentransposition/);
+  const key=result.prompt.match(/Schlüssel: ([A-Z]{3})/)[1];
+  const ciphertext=result.prompt.match(/VERSCHLÜSSELTER TEXT: ([A-Z]{6})/)[1];
+  const decoded=Array.from(ciphertext,(char,i)=>String.fromCharCode(65+(char.charCodeAt(0)-65-(key.charCodeAt(i%key.length)-65)+26)%26)).join('');
+  assert.equal(decoded,challenge.answer,'published instructions must decode the server-held code');
+  assert.equal(result.expiresAt-timestamp,150000);
   assert.equal(publicRoom(room,'guest',timestamp).players.guest.activeTask.answer,undefined);
   assert.equal(publicRoom(room,'host',timestamp).players.guest.activeTask,undefined);
   const tooFast=await applyAction(room,'guest',{action:'completeTask',proof:{id:result.id,answer:challenge.answer}},timestamp+1000);

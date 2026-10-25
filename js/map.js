@@ -15,6 +15,14 @@ let roundTrackLayers = [];
 let roundTrackFrame = null;
 let roundTrackSignature = '';
 const TRACK_COLORS = ['#49d7ff','#ff718d','#c9ff54','#b88cff','#ffbe5c','#62e6bc','#ff78d4','#89a9ff','#e8ec73','#ff9468'];
+const OSM_TILES = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+
+function addFreeMapTiles(target) {
+  L.tileLayer(OSM_TILES, {
+    attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap-Mitwirkende</a>',
+    maxZoom:19, className:'osm-dark-tiles'
+  }).addTo(target);
+}
 
 function markerIcon(kind) {
   return L.divIcon({ className:'custom-map-marker', html:`<div class="map-marker-core ${kind}"></div>`, iconSize:[20,20], iconAnchor:[10,10] });
@@ -25,10 +33,7 @@ export function initMap() {
   if (!mapElement || !window.L) return null;
   if (map) return map;
   map = L.map(mapElement, { zoomControl:true, preferCanvas:true, zoomSnap:.5 }).setView([52.52,13.405], 12);
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-    attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
-    subdomains:'abc', maxZoom:20
-  }).addTo(map);
+  addFreeMapTiles(map);
   map.on('load', () => {});
   compassOverlay = document.createElement('div');
   compassOverlay.className = 'compass-overlay';
@@ -219,7 +224,7 @@ export function drawRoundTracks(roundId, tracks, players) {
   empty.classList.add('hidden'); mapElement.classList.remove('hidden');
   if(!roundTrackMap) {
     roundTrackMap=L.map(mapElement,{zoomControl:true,preferCanvas:true,scrollWheelZoom:false}).setView([52.52,13.405],12);
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',subdomains:'abc',maxZoom:20}).addTo(roundTrackMap);
+    addFreeMapTiles(roundTrackMap);
   }
   const bounds=L.latLngBounds([]);
   legend.innerHTML=entries.map(({id,track,points})=>{
@@ -272,7 +277,7 @@ export function updateLobbyMap(room, host, onCenter) {
   if (!lobbyMap) {
     // World view is navigation only, never a player's position or actual zone.
     lobbyMap = L.map('lobbyMap').setView([20,0], 2);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {subdomains:'abc',maxZoom:19,attribution:'© OpenStreetMap-Mitwirkende'}).addTo(lobbyMap);
+    addFreeMapTiles(lobbyMap);
     lobbyMap.on('click', (event) => lobbySelect?.({lat:event.latlng.lat,lng:event.latlng.lng}));
   }
   const center = room.settings?.center;
