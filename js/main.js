@@ -1,4 +1,4 @@
-import { evaluateZone, makeLocationSample } from './gps.js';
+import { evaluateZone, makeLocationSample, validPoint } from './gps.js';
 import { initBackend, getBackendMode, getPlayerUid, createRoom, getRoom, mutateRoom, subscribeRoom, subscribeConnection, workerCommand, fetchRoundPhoto } from './backend.js';
 import { MAX_PLAYERS, MIN_PLAYERS } from './config.js';
 import { SKILLS, SKILL_IDS, DEFAULT_SETTINGS, skillTuning } from './skills.js';
@@ -157,7 +157,15 @@ async function startApp() {
   window.addEventListener('keydown', (event) => { if (event.key === 'Escape' && state.modalCloseable && !$('modalRoot').classList.contains('hidden')) closeModal(); });
   bindConnection();
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
-    navigator.serviceWorker.register('./sw.js', { updateViaCache:'none' }).catch((error) => console.warn('Service worker registration failed', error));
+    let reloadForWorkerUpdate = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (reloadForWorkerUpdate) return;
+      reloadForWorkerUpdate = true;
+      window.location.reload();
+    });
+    navigator.serviceWorker.register('./sw.js', { updateViaCache:'none' })
+      .then((registration) => registration.update().catch(() => {}))
+      .catch((error) => console.warn('Service worker registration failed', error));
   }
   await restoreSession();
   state.tickHandle = window.setInterval(tick, 500);
@@ -398,8 +406,18 @@ async function startGame() {
   $('startGameBtn').disabled = true;
   try {
     let response;
+    let hostLocation = state.ownLocation || getSelf()?.location;
+    if (!validPoint(state.room?.settings?.center)) {
+      hostLocation = await getFreshHostLocation();
+      if (getBackendMode() === 'worker') {
+        state.gpsSyncStatus = 'syncing';
+        await updatePlayerLocation(state.roomCode, state.uid, hostLocation);
+        state.lastLocationWrite = now();
+        state.gpsSyncStatus = 'synced';
+      }
+    }
     const result = getBackendMode() === 'worker' ? await workerCommand(state.roomCode,'start') : await mutateRoom(state.roomCode, (room) => {
-      response = startCountdown(room, state.uid, state.ownLocation || getSelf()?.location);
+      response = startCountdown(room, state.uid, hostLocation);
       if (!response.ok) return null;
       return room;
     });
@@ -407,6 +425,26 @@ async function startGame() {
     Sound.go();
   } catch (error) { toast('Start fehlgeschlagen', error?.message || 'Bitte erneut versuchen.', 'danger'); }
   finally { $('startGameBtn').disabled = false; }
+}
+
+function getFreshHostLocation() {
+  const current = state.ownLocation;
+  if (current && now() - current.measuredAt <= 10000 && current.accuracy <= 25) return Promise.resolve(current);
+  if (!navigator.geolocation) return Promise.reject(new Error('Zum automatischen Festlegen der Spielfeldmitte wird GPS benötigt.'));
+  return new Promise((resolve, reject) => {
+    navigator.geolocation.getCurrentPosition((position) => {
+      try {
+        const location = makeLocationSample(position, now());
+        if (location.accuracy > 25) throw new Error('GPS ist noch zu ungenau. Bitte kurz warten und erneut starten.');
+        state.ownLocation = location;
+        state.gpsError = null;
+        resolve(location);
+      } catch (error) { reject(error); }
+    }, (error) => {
+      const message = error?.code === 1 ? 'Erlaube GPS im Browser, damit die Spielfeldmitte automatisch gesetzt werden kann.' : 'GPS ist gerade nicht verfügbar. Bitte erneut versuchen.';
+      reject(new Error(message));
+    }, { enableHighAccuracy:true, timeout:15000, maximumAge:2500 });
+  });
 }
 
 function renderGame() {

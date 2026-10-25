@@ -16,6 +16,22 @@ function playing() {
   for (const p of Object.values(room.players)) {p.role=p.id==='host'?'seeker':'hider';p.status=p.role;p.active=true;p.location={lat:0,lng:0,accuracy:5,measuredAt:Date.now()};p.locationAt=Date.now();}
   return room;
 }
+test('worker automatically centers the playzone on the host GPS when starting', async () => {
+  const room=playing(),timestamp=Date.now();
+  room.phase='lobby'; room.settings.center=null;
+  room.players.host.location={lat:52.5,lng:13.4,accuracy:5,measuredAt:timestamp};
+  room.players.host.locationAt=timestamp;
+  await applyAction(room,'host',{action:'start'},timestamp);
+  assert.deepEqual(room.settings.center,{lat:52.5,lng:13.4});
+  assert.equal(room.phase,'countdown');
+});
+test('worker will not guess a playzone center when the host has no fresh GPS', async () => {
+  const room=playing(),timestamp=Date.now();
+  room.phase='lobby'; room.settings.center=null;
+  room.players.host.location=null; room.players.host.locationAt=0;
+  await assert.rejects(applyAction(room,'host',{action:'start'},timestamp),/FRESH_GPS_REQUIRED/);
+  assert.equal(room.settings.center,null);
+});
 test('private GPS is absent from unauthorized member views, including ghost under tracker', () => {
   const room=playing();
   assert.equal(publicRoom(room,'host').players.guest.location,undefined);
