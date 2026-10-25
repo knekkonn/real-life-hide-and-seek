@@ -18,6 +18,6 @@ export const MAX_PLAYERS = 20;
 export const MIN_PLAYERS = 2;
 export const ROOM_PATH = "hideSeekRooms";
 
-// Optional trusted Cloudflare Worker origin. See BACKEND.md before enabling.
-// Empty preserves the legacy Firebase development path; do not use it publicly.
-export const WORKER_URL = '';
+// Trusted Cloudflare Worker origin. The Worker verifies Firebase ID tokens
+// before exposing room or player data; do not replace it with a client key.
+export const WORKER_URL = 'https://real-life-hide-and-seek-api.knekkonn-hide-and-seek.workers.dev';

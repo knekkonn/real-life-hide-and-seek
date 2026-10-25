@@ -6,6 +6,7 @@ import worker from '../worker/index.js';
 import { applyAction, publicRoom, settlePhases } from '../worker/game.js';
 import { authenticate } from '../worker/auth.js';
 import { createRoomData, addPlayerToRoom } from '../js/game-service.js';
+import { findSafeItemLocations } from '../worker/itembox.js';
 
 function playing() {
   const room=createRoomData('host','HOST'); room.code='1234';
@@ -52,11 +53,46 @@ test('a verified in-range catch is applied immediately without target confirmati
 });
 test('catch requires fresh accurate positions within the allowed radius', async () => {
   const room=playing();
-  room.players.guest.location={lat:.001,lng:0,accuracy:5,measuredAt:Date.now()};room.players.guest.locationAt=Date.now();
+  room.players.guest.location={lat:.00005,lng:0,accuracy:5,measuredAt:Date.now()};room.players.guest.locationAt=Date.now();
   await assert.rejects(applyAction(room,'host',{action:'requestCatch',targetId:'guest'}),/CATCH_RANGE_REQUIRED/);
   assert.equal(room.players.guest.role,'hider');
+  const close=playing();close.settings.mode='infected';close.players.guest.location={lat:.00004,lng:0,accuracy:5,measuredAt:Date.now()};close.players.guest.locationAt=Date.now();
+  await applyAction(close,'host',{action:'requestCatch',targetId:'guest'});
+  assert.equal(close.players.guest.role,'seeker','a GPS distance below 5 m is accepted');
+  const outside=playing();outside.players.guest.location={lat:.00006,lng:0,accuracy:5,measuredAt:Date.now()};outside.players.guest.locationAt=Date.now();
+  await assert.rejects(applyAction(outside,'host',{action:'requestCatch',targetId:'guest'}),/CATCH_RANGE_REQUIRED/);
   room.players.guest.location={lat:0,lng:0,accuracy:45,measuredAt:Date.now()};room.players.guest.locationAt=Date.now();
   await assert.rejects(applyAction(room,'host',{action:'requestCatch',targetId:'guest'}),/FRESH_GPS_REQUIRED/);
+});
+
+test('item boxes are selected only from mapped public footways and are disabled when OSM is unavailable', async () => {
+  const response={elements:[
+    {type:'way',tags:{highway:'footway',foot:'yes'},geometry:Array.from({length:11},(_,i)=>({lat:0,lon:-.001+i*.0002}))},
+    {type:'way',tags:{building:'yes'},geometry:[{lat:-.0001,lon:-.0001},{lat:-.0001,lon:.0001},{lat:.0001,lon:.0001},{lat:.0001,lon:-.0001},{lat:-.0001,lon:-.0001}]}
+  ]};
+  const fetchImpl=async()=>new Response(JSON.stringify(response),{headers:{'content-type':'application/json'}});
+  const points=await findSafeItemLocations({lat:0,lng:0},500,fetchImpl);
+  assert.ok(points.length>0);
+  assert.ok(points.every(point=>Math.abs(point.location.lat)<1e-8),'cache should remain on the mapped footway');
+  assert.deepEqual(await findSafeItemLocations({lat:0,lng:0},500,async()=>new Response('',{status:503})),[]);
+});
+test('protected-area multipolygon relations block cache points even when boundary ways are split', async () => {
+  const ring=[[ -.0001,-.0001],[-.0001,.0001],[.0001,.0001],[.0001,-.0001],[-.0001,-.0001]];
+  const relation={type:'relation',tags:{boundary:'protected_area'},members:ring.slice(1).map((point,i)=>({type:'way',role:'outer',geometry:[{lat:ring[i][0],lon:ring[i][1]},{lat:point[0],lon:point[1]}]}))};
+  const path={type:'way',tags:{highway:'footway',foot:'yes'},geometry:Array.from({length:11},(_,i)=>({lat:0,lon:-.001+i*.0002}))};
+  const fetchImpl=async()=>new Response(JSON.stringify({elements:[path,relation]}),{headers:{'content-type':'application/json'}});
+  const points=await findSafeItemLocations({lat:0,lng:0},500,fetchImpl);
+  assert.ok(points.length>0);
+  assert.ok(points.every(({location})=>Math.abs(location.lng)>.0001),'all generated points stay outside the protected polygon');
+});
+test('transition into the live phase announces and stores only OSM-checked item boxes', async () => {
+  const room=playing();room.phase='hide';room.phaseEndsAt=Date.now()-1;
+  const fetchImpl=async()=>new Response(JSON.stringify({elements:[{type:'way',tags:{highway:'footway',foot:'designated',level:'1'},geometry:Array.from({length:11},(_,i)=>({lat:0,lon:-.001+i*.0002}))}]}),{headers:{'content-type':'application/json'}});
+  const result=await settlePhases(room,fetchImpl);
+  assert.equal(result.phase,'playing');
+  assert.ok(Object.keys(result.itemBoxes).length>0);
+  assert.ok(Object.values(result.itemBoxes).every(box=>box.level===1));
+  assert.match(result.announcement.message,/öffentlich kartierten Wegen/);
 });
 test('forged reward submissions cannot award currency', async () => {
   const room=playing();const before=room.players.guest.coins;

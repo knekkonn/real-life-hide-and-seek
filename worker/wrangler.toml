@@ -8,7 +8,7 @@ ALLOWED_ORIGIN = "https://knekkonn.github.io"
 [[d1_databases]]
 binding = "DB"
 database_name = "hide-and-seek"
-database_id = "REPLACE_WITH_CREATED_D1_ID"
+database_id = "888ef154-d961-45cd-a3fd-aeaf193be8ee"
 migrations_dir = "migrations"
 
 [triggers]

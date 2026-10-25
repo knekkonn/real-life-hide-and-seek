@@ -2,6 +2,7 @@ import * as game from '../js/game-service.js';
 import { normalizeRoom } from '../js/transactions.js';
 import { evaluateZone, validPoint } from '../js/gps.js';
 import { distanceMeters, bearingDegrees, destinationPoint } from '../js/utils.js';
+import { findSafeItemLocations } from './itembox.js';
 
 export function publicRoom(source, uid, timestamp=Date.now()) {
   const room = structuredClone(source);
@@ -131,7 +132,7 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
       const target=room.players?.[input.targetId];
       if(!target || !target.active || target.role!=='hider') throw new Error('TARGET_NOT_CATCHABLE');
       if(!freshAccurate(player,timestamp) || !freshAccurate(target,timestamp)) throw new Error('FRESH_GPS_REQUIRED');
-      if(distanceMeters(player.location,target.location)>30) throw new Error('CATCH_RANGE_REQUIRED');
+      if(distanceMeters(player.location,target.location)>5) throw new Error('CATCH_RANGE_REQUIRED');
       result=await game.requestCatch(context,uid,input.targetId); break;
     }
     case 'buySkill': result=await game.buySkill(context,uid,input.skillId); break;
@@ -226,11 +227,21 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
   return {room:context.room,result:result && typeof result === 'object' && 'ok' in result ? result : Boolean(result)};
 }
 
-export async function settlePhases(room) {
+export async function settlePhases(room, fetchImpl=fetch) {
   const context = {room};
   for (let i=0;i<5;i++) {
     if (!context.room.phaseEndsAt || context.room.phaseEndsAt>Date.now()) break;
+    const previous=context.room.phase;
     if (!await game.advanceExpiredPhase(context,context.room)) break;
+    if(previous==='hide' && context.room.phase==='playing') {
+      context.room.itemBoxes={};
+      const points=await findSafeItemLocations(context.room.settings.center,Number(context.room.settings.radius)||500,fetchImpl);
+      for(const {location,level,layer} of points) {
+        const id=crypto.randomUUID();
+        context.room.itemBoxes[id]={id,location,createdAt:Date.now(),collected:false,type:Math.random()<.72?'credits':'skill',...(level===undefined?{}:{level}),...(layer===undefined?{}:{layer})};
+      }
+      context.room.announcement={id:crypto.randomUUID(),type:'system',title:'SEEK PHASE LIVE',message:points.length?`${points.length} Signal Caches auf öffentlich kartierten Wegen aktiviert.`:'Keine Signal Caches: Für diese Zone sind keine geeigneten öffentlichen Wege verzeichnet.',createdAt:Date.now()};
+    }
   }
   if(context.room.phase==='finished') context.room.photoMetadata={};
   return context.room;

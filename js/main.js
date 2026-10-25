@@ -620,7 +620,7 @@ async function requestGPS() {
   const onSuccess = async (position) => {
     if (state.roomCode !== requestedCode || !state.uid) return;
     const coords = position.coords;
-    state.ownLocation = { lat:coords.latitude, lng:coords.longitude, accuracy:coords.accuracy, measuredAt:position.timestamp + (now() - Date.now()) };
+    state.ownLocation = { lat:coords.latitude, lng:coords.longitude, accuracy:coords.accuracy, measuredAt:position.timestamp + (now() - Date.now()), ...(Number.isFinite(coords.altitude) && Number.isFinite(coords.altitudeAccuracy) && coords.altitudeAccuracy<=20 ? {altitude:coords.altitude} : {}) };
     state.gpsError = null;
     state.gpsPending = false;
     $('gpsBtn').textContent = '◎ GPS verbunden';
@@ -734,7 +734,7 @@ function handleEffects(room) {
 function openCatchPicker() {
   const candidates = activePlayers().filter((player) => player.role === 'hider' && player.id !== state.uid);
   if (!candidates.length) { toast('Keine Hider verfügbar', 'Alle Hider wurden bereits gefangen oder sind nicht aktiv.', 'warn'); return; }
-  openModal({ kicker:'TARGET ACQUISITION', title:'Hider gefangen melden', body:`<p class="modal-copy">Wähle den Hider, den du gerade tatsächlich berührt hast. Der Fang wird sofort registriert, wenn beide Geräte aktuelles, genaues GPS melden und höchstens 30 m auseinanderliegen. Der Hider muss nichts bestätigen.</p><div class="modal-option-list">${candidates.map((player) => `<button type="button" class="modal-option" data-catch-target="${escapeHTML(player.id)}"><span class="player-avatar">${escapeHTML(player.name.slice(0,1).toUpperCase())}</span><span><strong>${displayName(player)}</strong><small>Ausgewählte Begegnung</small></span></button>`).join('')}</div><div class="safety-copy">GPS allein beweist keinen Fang. Nur bei tatsächlicher Berührung melden und in öffentlichen, sicheren Bereichen spielen.</div>`, actions:[{label:'Abbrechen',variant:'button-secondary'}] });
+  openModal({ kicker:'TARGET ACQUISITION', title:'Hider gefangen melden', body:`<p class="modal-copy">Wähle den Hider, den du gerade tatsächlich berührt hast. Der Fang wird sofort registriert, wenn beide Geräte frisches GPS melden und höchstens 5 m auseinanderliegen. Der Hider muss nichts bestätigen.</p><div class="modal-option-list">${candidates.map((player) => `<button type="button" class="modal-option" data-catch-target="${escapeHTML(player.id)}"><span class="player-avatar">${escapeHTML(player.name.slice(0,1).toUpperCase())}</span><span><strong>${displayName(player)}</strong><small>Ausgewählte Begegnung</small></span></button>`).join('')}</div><div class="safety-copy">GPS allein beweist keinen Fang. Nur bei tatsächlicher Berührung melden und in öffentlichen, sicheren Bereichen spielen.</div>`, actions:[{label:'Abbrechen',variant:'button-secondary'}] });
   $('modalBody').querySelectorAll('[data-catch-target]').forEach((button) => button.addEventListener('click', async () => {
     const targetId = button.dataset.catchTarget;
     closeModal();

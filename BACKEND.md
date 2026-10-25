@@ -1,10 +1,10 @@
-# Kostenlosen Zusatzdienst einrichten (Entwurf, noch nicht produktiv geprüft)
+# Cloudflare Worker und D1
 
-GitHub Pages bleibt das Frontend. Firebase Authentication bleibt für anonyme, lokal persistierte Identitäten erhalten. Der optionale Cloudflare Worker prüft ID-Tokens bei Google und speichert Spielräume in D1. **Im Worker-Modus ist D1 die maßgebliche Raumdatenbank, nicht Firebase Realtime Database.** Bestehende Firebase-Lobbys werden nicht migriert. Diese Architekturänderung ist eine vorbereitete Alternative zum bisherigen Firebase-only-Prototyp.
+GitHub Pages bleibt das Frontend. Firebase Authentication stellt anonyme Spieler-Identitäten bereit; der Cloudflare Worker prüft die ID-Tokens bei Google und speichert Spielräume in einer D1-Datenbank mit EU-Jurisdiktion. **Im Worker-Modus ist D1 die maßgebliche Raumdatenbank, nicht Firebase Realtime Database.** Bestehende Firebase-Lobbys werden nicht migriert.
 
-Der Worker braucht keinen Firebase-Service-Account, privaten Schlüssel oder dauerhaft laufenden Mac. Die Firebase-Webkonfiguration ist öffentlich und kein Admin-Schlüssel. Eine Cloudflare-Anmeldung und eine einmalige Einrichtung sind erforderlich. Es wurde kein Cloudflare-Konto verbunden und kein Dienst veröffentlicht.
+Der Worker ist unter `https://real-life-hide-and-seek-api.knekkonn-hide-and-seek.workers.dev` veröffentlicht. Das Schema ist angewendet; eine stündliche Bereinigung entfernt abgelaufene Räume und Rate-Limit-Einträge. Der Worker braucht keinen Firebase-Service-Account oder privaten Schlüssel. `js/config.js` zeigt auf den Worker; `worker/wrangler.toml` enthält die D1-Bindung.
 
-## Einrichtung auf dem Mac
+## Wartung und erneute Bereitstellung
 
 1. Node.js 24 LTS installieren. Für die Emulatorprüfung zusätzlich ein zur aktuellen Firebase CLI passendes Java installieren. In Terminal prüfen:
 
@@ -14,31 +14,31 @@ Der Worker braucht keinen Firebase-Service-Account, privaten Schlüssel oder dau
    java --version
    ```
 
-2. Den nach Freigabe bereitgestellten Reparaturbranch in einen eigenen Projektordner laden und dort die lokalen Tests ausführen:
+2. Repository laden und Tests ausführen:
 
    ```bash
    npm test
    ```
 
-3. In der Cloudflare-Konsole ein kostenloses Workers-Konto erstellen. Keine kostenpflichtigen Erweiterungen aktivieren. Danach im Projektordner:
+3. Mit dem bestehenden Cloudflare-Konto anmelden. Es ist kein zusätzliches Konto erforderlich:
 
    ```bash
    npx wrangler login
-   npx wrangler d1 create hide-and-seek
+   npx wrangler whoami
    ```
 
-4. Die von Cloudflare zurückgegebene `database_id` in `worker/wrangler.toml` anstelle von `REPLACE_WITH_CREATED_D1_ID` eintragen. `ALLOWED_ORIGIN` ist nur die Origin `https://knekkonn.github.io`, ohne Repositorypfad. Bei einem anderen Host exakt anpassen.
+4. Die bestehende D1-ID steht in `worker/wrangler.toml`. `ALLOWED_ORIGIN` ist exakt `https://knekkonn.github.io`, ohne Repositorypfad. Bei einem anderen Host exakt anpassen.
 
-5. Datenbankschema anwenden und Worker zunächst nur für kontrollierte Tests veröffentlichen:
+5. Migration und Worker bei Änderungen aktualisieren:
 
    ```bash
    npx wrangler d1 migrations apply hide-and-seek --remote --config worker/wrangler.toml
    npx wrangler deploy --config worker/wrangler.toml
    ```
 
-   Die zurückgegebene HTTPS-Worker-URL aufbewahren. Sie ist ein öffentlich erreichbarer API-Endpunkt; Raumdaten erfordern zusätzlich einen gültigen Firebase-ID-Token und bestätigte Mitgliedschaft. CORS ersetzt diese Autorisierung nicht.
+   Der Worker-Endpunkt ist öffentlich erreichbar; Raumdaten erfordern zusätzlich einen gültigen Firebase-ID-Token und bestätigte Mitgliedschaft. CORS ersetzt diese Autorisierung nicht.
 
-6. In `js/config.js` `WORKER_URL` auf diese HTTPS-Origin setzen, ohne abschließenden Pfad. Den Cache-Namen in `sw.js` für diese Konfigurationsänderung erneut erhöhen.
+6. Wenn sich die Worker-URL ändert, `WORKER_URL` in `js/config.js` aktualisieren und den Cache-Namen in `sw.js` erhöhen.
 
 7. Firebase-Konsole öffnen: Authentication → Sign-in method → Anonymous aktivieren. Webkonfiguration mit `js/config.js` vergleichen. API-Key-Einschränkungen müssen Tokenprüfung über Identity Toolkit vom Worker erlauben; unpassende HTTP-Referrer-Einschränkungen können die Serverprüfung blockieren. Keine Admin-Schlüssel in GitHub eintragen.
 
@@ -50,11 +50,11 @@ Der Worker braucht keinen Firebase-Service-Account, privaten Schlüssel oder dau
 
    Dieser Test wurde hier **nicht ausgeführt**, weil die Umgebung ihren Netzwerkproxy nicht erreichen kann. Er prüft die beigefügten vollständig sperrenden RTDB-Regeln, keine nicht existierenden Firebase-Spielaktionsregeln.
 
-9. Die neue Oberfläche auf einer isolierten HTTPS-Testadresse testen. Dafür kann ein separater GitHub-Pages-Testrepo oder später eine private Sites-Vorschau verwendet werden. Die produktive Pages-Seite erst nach den Tests ändern. Ein lokaler Mac-Server allein ersetzt den Test mit zwei echten Geräten nicht.
+9. Die Oberfläche nach Veröffentlichung auf HTTPS und mit zwei echten Geräten prüfen. Ein lokaler Mac-Server allein ersetzt diesen Test nicht.
 
 10. Wenn der Worker-Modus auf allen Clients erfolgreich läuft, **vor einer öffentlichen Nutzung** in Firebase Realtime Database → Rules den Inhalt aus `database.rules.production.json` veröffentlichen. Dadurch werden alle direkten RTDB-Clientzugriffe gesperrt. Bestehende Firebase-only-Versionen funktionieren danach nicht mehr. Die neue Worker-Version braucht diese Zugriffe nicht.
 
-11. Erst nach bestandener Abnahme den geprüften Branch nach `main` übernehmen. Unter GitHub → Repository → Settings → Pages die bestehende Veröffentlichung aus `main`, Ordner `/ (root)`, beibehalten. Falls das Repository Actions für Pages nutzt, den bestehenden Workflow verwenden. Nach erfolgreichem Pages-Deployment alle alten App-Tabs/PWA-Fenster schließen und neu öffnen. Ein wartender Service Worker ersetzt absichtlich keine laufende Runde.
+11. Nach erfolgreichem Pages-Deployment alte App-Tabs/PWA-Fenster schließen und neu öffnen. Ein wartender Service Worker ersetzt absichtlich keine laufende Runde.
 
 ## Verhalten des Workers
 
@@ -64,7 +64,8 @@ Der Worker braucht keinen Firebase-Service-Account, privaten Schlüssel oder dau
 - Serverzeit bestimmt Phasen, Belohnungen und Fangfristen. Abgelaufene Phasen werden auch bei einem Lesezugriff anhand der ursprünglichen Fristen nachgeholt, wenn der Host gerade offline ist.
 - Roh-GPS bleibt im serverseitigen Raumzustand. Antworten enthalten eigene Positionen und nur berechtigte fremde Signale: Sonar gerundet auf 0,001 Grad, Tracker während der Laufzeit, Kompass als 100-Meter-Richtungsprojektion, Seeker-Radar nur ohne Jammer. Geist-Modus unterbindet fremde Positionsfreigaben.
 - GPS-Messungen älter als zehn Sekunden oder mit Genauigkeit über 50 Metern bestätigen keinen Zonenverstoß. Lücken über zehn Sekunden unterbrechen die durchgehende Beweiskette. Nach 30 Sekunden frischer, eindeutig außerhalb liegender Messungen: minus fünf Münzen, nie unter null. Bei jedem dritten bestätigten Verstoß: zusätzlich 30 Sekunden Aktionssperre. Pro ununterbrochener Überschreitung wird nur einmal gezählt. Neue präzise Innenmessung beendet diese Überschreitung.
-- Ein Fang wird sofort registriert und braucht keine Bestätigung des Hiders. Der Worker verlangt aktuelle GPS-Messungen beider Spieler mit höchstens 25 m Messungenauigkeit und höchstens 30 m Abstand. Das ist ein Näherungsfilter, kein Beweis einer Berührung.
+- Ein Fang wird sofort registriert und braucht keine Bestätigung des Hiders. Der Worker verlangt aktuelle GPS-Messungen beider Spieler mit höchstens 25 m Messungenauigkeit und höchstens 5 m Abstand. Das ist ein Näherungsfilter, kein Beweis einer Berührung.
+- Signal Caches werden im Worker nur auf von OSM als öffentlich zugänglich kartierten Fußwegen platziert. Gebäude, Wasserflächen, militärische Bereiche, Schutzgebiete und explizit beschränkte Wege werden ausgeschlossen. Gibt es keine passenden Kartendaten oder ist Overpass nicht erreichbar, entstehen keine Caches. OSM ist nicht überall vollständig; vor jeder Runde muss die Spielzone weiterhin sicher und öffentlich begehbar sein.
 - Hider-Aufgaben brauchen eine serverseitig ausgegebene Challenge, Mindestdauer, Ablaufzeit und einmalige Einlösung. Die Chiffre kombiniert Vigenère und eine zufällige 4×3-Spaltentransposition. Zielpunkte bleiben bis zur persönlichen Zuweisung geheim; Halte-Aufgaben scheitern bei Bewegung oder veralteten GPS-Messungen.
 - Fotos werden vom Client verkleinert, der Worker lehnt Bilder mit EXIF/XMP ab und liefert Bytes nur über einen authentifizierten Seeker-Endpunkt in der Livephase. Rundenende oder eine neue Runde entfernt sie; der letzte Austritt löscht alle Spieler- und Ortsdaten.
 - Verlässt der Host eine aktive Runde, erhält der älteste aktive Mitspieler die Host-Rolle. Verlässt der Host die Lobby, wird der Raum geschlossen.
@@ -78,4 +79,4 @@ Rate Limits gelten pro Firebase-Identität: fünf Beitrittsversuche/Minute, drei
 
 Mitspieler erhalten über die App keine IP-Adressen. Firebase, Cloudflare, Karten- und Netzwerkdienstleister sehen technisch erforderliche Verbindungsdaten. Cloudflare-/Firebase-Protokollierung und Aufbewahrung in den jeweiligen Konten prüfen. GPS-Freigabe erfolgt nur über einen bewussten Klick. Betriebssystem-GPS und Shake-Sensoren können manipuliert werden; auch ein autorisierender Server beweist keine physische Begegnung oder Bewegung.
 
-Die GitHub-Pages-Oberfläche braucht für diese servergeprüften Aktionen einen eingerichteten Worker/D1-Dienst und eine gesetzte `WORKER_URL`. Solange das fehlt, sind die Aufgaben in der Oberfläche gesperrt; der Firebase-Testpfad ist kein Ersatz für die Serverprüfungen.
+Die sichtbare GitHub-Pages-Version erhält die neue `WORKER_URL` erst mit der Veröffentlichung des Folge-PRs. Die aktuelle App-Version bleibt bis dahin auf ihrem bisherigen Stand. Im Workers-Free-Plan gilt ein Tageslimit von 100.000 Worker-Aufrufen; bei 20 dauerhaft sichtbaren Spielgeräten und 5-Sekunden-Abfragen wären das rund 14.400 Aufrufe pro Stunde, zuzüglich Spielaktionen. Hintergrund-Tabs fragen nur alle 30 Sekunden ab. Das kostenlose Kontingent ist daher für zeitlich begrenzte Runden vorgesehen, nicht für dauerhaft offene Sitzungen.

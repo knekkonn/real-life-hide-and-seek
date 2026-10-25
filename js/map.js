@@ -20,9 +20,9 @@ export function initMap() {
   if (!mapElement || !window.L) return null;
   if (map) return map;
   map = L.map(mapElement, { zoomControl:true, preferCanvas:true, zoomSnap:.5 }).setView([52.52,13.405], 12);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap-Mitwirkende</a>',
-    subdomains:'abc', maxZoom:19
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
+    subdomains:'abc', maxZoom:20
   }).addTo(map);
   map.on('load', () => {});
   compassOverlay = document.createElement('div');
@@ -45,7 +45,7 @@ function putMarker(id, point, kind, label, detail='') {
   if (!map || !point || !Number.isFinite(point.lat) || !Number.isFinite(point.lng)) return;
   const existing = mapMarkers.get(id);
   label = escapeHTML(label || '');
-  const popupHtml = label ? `<strong>${label}</strong>${detail ? `<br>${detail}` : ''}` : '';
+  const popupHtml = label ? `<strong>${label}</strong>${detail ? `<br>${escapeHTML(detail)}` : ''}` : '';
   if (existing) {
     existing.setLatLng([point.lat, point.lng]);
     if (existing._hideSeekKind !== kind) {
@@ -90,7 +90,8 @@ export function updateMap(room, selfId, ownLocation, role) {
   }
   if (ownLocation) {
     allowed.add(`player:${selfId}`);
-    putMarker(`player:${selfId}`, ownLocation, 'self', 'Deine Position', 'GPS aktiv');
+    const ownHeight=Number.isFinite(ownLocation.altitude)?` · Höhe ${Math.round(ownLocation.altitude)} m`:'';
+    putMarker(`player:${selfId}`, ownLocation, 'self', 'Deine Position', `GPS aktiv${ownHeight}`);
     if (!userCircle) userCircle = L.circle([ownLocation.lat,ownLocation.lng], { radius:8, color:'#b9ff52', weight:1, fillColor:'#b9ff52', fillOpacity:.08 }).addTo(map);
     else userCircle.setLatLng([ownLocation.lat,ownLocation.lng]);
   }
@@ -122,7 +123,13 @@ export function updateMap(room, selfId, ownLocation, role) {
     if (show) {
       const id = `player:${player.id}`;
       allowed.add(id);
-      const detail = trackerTarget === player.id ? `TRACK LOCK · ${formatTime((myEffects.trackerUntil-now())/1000)}` : (kind === 'seeker' ? 'Seeker-Signal' : 'Sonar-Kontakt');
+      const detailParts=[trackerTarget === player.id ? `TRACK LOCK · ${formatTime((myEffects.trackerUntil-now())/1000)}` : (kind === 'seeker' ? 'Seeker-Signal' : 'Sonar-Kontakt')];
+      if(Number.isFinite(player.location.floor)) detailParts.push(`Etage ${player.location.floor>0?'+':''}${player.location.floor}`);
+      if(Number.isFinite(ownLocation?.altitude) && Number.isFinite(player.location.altitude)) {
+        const delta=Math.round(player.location.altitude-ownLocation.altitude);
+        if(Math.abs(delta)>=3) detailParts.push(`${delta>0?'↑':'↓'} ${Math.abs(delta)} m Höhe`);
+      }
+      const detail=detailParts.join(' · ');
       putMarker(id, player.location, kind, label, detail);
     }
   }
@@ -151,7 +158,8 @@ export function updateMap(room, selfId, ownLocation, role) {
   for (const box of itemBoxes) {
     const id = `box:${box.id}`;
     allowed.add(id);
-    putMarker(id, box.location, 'cache', 'Signal Cache', 'Itembox · Nähe erforderlich');
+    const level=Number.isFinite(box.level)?`Etage ${box.level>0?'+':''}${box.level}`:Number.isFinite(box.layer)&&box.layer!==0?`Ebene ${box.layer>0?'+':''}${box.layer}`:'';
+    putMarker(id, box.location, 'cache', 'Signal Cache', `Itembox · Nähe erforderlich${level?` · ${level}`:''}`);
   }
   for (const [id, marker] of mapMarkers.entries()) {
     if (!allowed.has(id)) { map.removeLayer(marker); mapMarkers.delete(id); }

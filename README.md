@@ -1,6 +1,6 @@
 # HIDE//SEEK – Reparaturentwurf
 
-**Noch nicht produktionsreif und nicht veröffentlicht.** Der vorhandene Code wurde repariert und um einen optionalen Cloudflare-Worker/D1-Dienst ergänzt. GitHub Pages bleibt die Oberfläche, Firebase Authentication die Identität. Im Worker-Modus ersetzt D1 die bisherige gemeinsame Firebase-Raumdatenhaltung. Ohne gesetzte `WORKER_URL` bleibt der ursprüngliche Firebase-Testpfad aktiv; seine Entwicklungsregeln sind nicht für öffentliche Nutzung geeignet.
+**Cloudflare Worker und EU-D1 sind provisioniert.** Dieser Stand verbindet GitHub Pages mit dem Worker; Firebase Authentication bleibt die Identität, D1 die maßgebliche Raumdatenbank. Der Worker prüft Fangdistanz, Aufgaben, Mitgliedschaft und private Spielerdaten serverseitig. Vor regulärem Spielbetrieb sind noch ein echter Firebase-Auth-Test sowie die Zwei-Geräte-/GPS-Abnahme nötig.
 
 - Einrichtung und notwendige Mac-/Firebase-/Cloudflare-Schritte: [BACKEND.md](BACKEND.md)
 - Ausgeführte Tests, Grenzen und Geräte-Abnahme: [VALIDATION.md](VALIDATION.md)
@@ -21,10 +21,10 @@ Eine responsive, PWA-fähige Web-App für ein GPS-basiertes Real-Life-Hide-and-S
 - Lobby-Erstellung mit vierstelligem Raumcode und Beitritt über Codename
 - Host-Einstellungen: Classic/Infiziert, Versteckzeit, Matchdauer, Spielradius, Skill-Pool und Gefangen-Meldungen
 - Synchronisierte Countdown-, Rollen-Enthüllungs-, Versteck-, Live-Match- und Endphase
-- Leaflet-Karte auf OpenStreetMap-Kacheln ohne Karten-API-Key, mit Spielradius, GPS-Punkt, zufälligen Feldzielen, Signal Caches, Täusch-Markern und Fallen
+- Leaflet-Karte mit kostenlosen CARTO-Dunkelkacheln ohne Karten-API-Key, OpenStreetMap-Attribution, Spielradius, GPS-Punkt, Feldzielen, Signal Caches, Täusch-Markern und Fallen
 - Hider-Aufgaben mit servergeprüften Zielpunkten und Haltezeiten, Vigenère-/Transpositionsrätsel, einem Versteckfoto pro Runde, Fehlversuch-Cooldown und einmaligen Belohnungen (Worker erforderlich)
-- Seeker-/Hider-Arsenal, Münzen, Skill-Inventar, Catch-Anfrage mit Bestätigung, Rollenwechsel und Ingame-Banner
-- Catch-Anfrage mit Bestätigung am Zielgerät, Classic-Zuschauerstatus, Infiziert-Rollenwechsel und Ingame-Banner
+- Seeker-/Hider-Arsenal, Münzen, Skill-Inventar, sofortiger Fang bei höchstens 5 m GPS-Abstand, Rollenwechsel und Ingame-Banner
+- Classic-Zuschauerstatus, Infiziert-Rollenwechsel und Ingame-Banner
 - Soundeffekte über Web Audio API, optionale Vibration, Reconnect-Feedback, GPS-Fehlerzustände
 - PWA-Manifest und Service Worker für das App-Shell-Caching
 - Lokale Darstellung ohne konfiguriertes Backend; sichere Multiplayer-Aufgaben sind dann deaktiviert
@@ -68,6 +68,7 @@ Die aktuelle Anwendung ist ein funktionsreicher Client-Prototyp; die Realtime-Da
 
 - Der Host sollte GPS vor Spielbeginn freigeben, damit der Spielradius und Signal Caches auf einen tatsächlichen Standort gesetzt werden können.
 - Signal Caches sind innerhalb von 15 m sammelbar; die Genauigkeit hängt vom Endgerät und GPS-Empfang ab.
+- Caches werden nur auf öffentlich kartierten Fußwegen erzeugt. Fehlen geeignete OSM-Daten, erscheinen in der Runde keine Caches. GPS-Höhenunterschiede und OSM-Etagen-/Ebenenangaben erscheinen am Kartenmarker, sofern sie verfügbar sind.
 - Fangmeldungen werden auf dem Zielgerät bestätigt. GPS-Nähe allein bedeutet keinen Fang.
 - Die Shake-Challenge nutzt Bewegungsdaten, sofern das Gerät sie bereitstellt. Auf Desktop ist eine Demo-Simulation verfügbar.
 - Der Radar-Jammer blendet die Seeker-Radaransicht der Hider visuell aus; echtes sicheres Zurückhalten von Positionsdaten benötigt die oben beschriebene serverseitige Datenaufteilung.
