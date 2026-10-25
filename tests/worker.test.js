@@ -152,7 +152,7 @@ test('new round resets player locations and last departure clears all room playe
   await applyAction(room,'guest',{action:'leaveRoom'});
   assert.equal(Object.keys(room.players).length,3,'player records are cleared only after every player has left');
   await applyAction(room,'other',{action:'leaveRoom'});
-  assert.equal(room.phase,'closed');assert.deepEqual(room.players,{});assert.deepEqual(room.photoMetadata,{});
+  assert.equal(room.phase,'closed');assert.deepEqual(room.players,{});assert.deepEqual(room.photoMetadata,{});assert.equal(room.hostId,null);assert.equal(room.settings.center,null);
 });
 test('a host leaving an active round transfers control and is not restored next round', async () => {
   const room=playing(); room.phase='finished';

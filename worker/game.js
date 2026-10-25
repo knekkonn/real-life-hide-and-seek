@@ -208,7 +208,7 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
       if(room.photoMetadata) delete room.photoMetadata[uid];
       result=true;
       if (Object.values(room.players).every(p=>!p.active || p.status==='left')) {
-        room.phase='closed'; room.closedAt=timestamp; room.players={}; room.joinRequests={}; room.challenges={}; room.objectives={}; room.traps={}; room.decoys={}; room.itemBoxes={}; room.photoMetadata={}; room.pendingCatch=null; room.announcement=null;
+        room.phase='closed'; room.closedAt=timestamp; room.players={}; room.hostId=null; room.joinRequests={}; room.challenges={}; room.objectives={}; room.traps={}; room.decoys={}; room.itemBoxes={}; room.effects={}; room.photoMetadata={}; room.eventLog=[]; room.pendingCatch=null; room.announcement=null; room.announcementForSeeker=null; room.winner=null; room.startedAt=null; room.matchEndsAt=null; room.settings.center=null; delete room.roundPhotos;
       }
       break;
     default: throw new Error('UNKNOWN_ACTION');
