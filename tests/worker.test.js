@@ -76,6 +76,15 @@ test('item boxes are selected only from mapped public footways and are disabled 
   assert.ok(points.every(point=>Math.abs(point.location.lat)<1e-8),'cache should remain on the mapped footway');
   assert.deepEqual(await findSafeItemLocations({lat:0,lng:0},500,async()=>new Response('',{status:503})),[]);
 });
+test('protected-area multipolygon relations block cache points even when boundary ways are split', async () => {
+  const ring=[[ -.0001,-.0001],[-.0001,.0001],[.0001,.0001],[.0001,-.0001],[-.0001,-.0001]];
+  const relation={type:'relation',tags:{boundary:'protected_area'},members:ring.slice(1).map((point,i)=>({type:'way',role:'outer',geometry:[{lat:ring[i][0],lon:ring[i][1]},{lat:point[0],lon:point[1]}]}))};
+  const path={type:'way',tags:{highway:'footway',foot:'yes'},geometry:Array.from({length:11},(_,i)=>({lat:0,lon:-.001+i*.0002}))};
+  const fetchImpl=async()=>new Response(JSON.stringify({elements:[path,relation]}),{headers:{'content-type':'application/json'}});
+  const points=await findSafeItemLocations({lat:0,lng:0},500,fetchImpl);
+  assert.ok(points.length>0);
+  assert.ok(points.every(({location})=>Math.abs(location.lng)>.0001),'all generated points stay outside the protected polygon');
+});
 test('transition into the live phase announces and stores only OSM-checked item boxes', async () => {
   const room=playing();room.phase='hide';room.phaseEndsAt=Date.now()-1;
   const fetchImpl=async()=>new Response(JSON.stringify({elements:[{type:'way',tags:{highway:'footway',foot:'designated',level:'1'},geometry:Array.from({length:11},(_,i)=>({lat:0,lon:-.001+i*.0002}))}]}),{headers:{'content-type':'application/json'}});
