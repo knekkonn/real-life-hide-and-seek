@@ -1,4 +1,4 @@
-const CACHE_NAME = 'hide-seek-shell-v1';
+const CACHE_NAME = 'hide-seek-shell-v2';
 const APP_SHELL = [
   './', './index.html', './styles.css', './manifest.webmanifest', './assets/icon.svg',
   './js/config.js', './js/backend.js', './js/skills.js', './js/utils.js', './js/map.js', './js/game-service.js', './js/main.js'
