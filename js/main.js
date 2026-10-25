@@ -814,7 +814,7 @@ async function startTask(kind) {
     state.activeTaskId=challenge.id;
     const escapedPrompt=escapeHTML(challenge.prompt || 'Finde den Zielpunkt auf der Karte.');
     const body=kind==='cipher'
-      ? `<p class="modal-copy">${escapedPrompt}</p><label class="modal-field-label" for="taskAnswer">12-stelliger Klartext-Code</label><input id="taskAnswer" class="modal-input" autocomplete="off" maxlength="12" minlength="12" autocapitalize="characters" spellcheck="false" aria-label="12-stelliger Klartext-Code"><p>Falsche oder zu schnelle Antworten beenden den Versuch und starten den Cooldown.</p>`
+      ? `<p class="modal-copy">${escapedPrompt}</p><label class="modal-field-label" for="taskAnswer">6-Buchstaben-Klartext</label><input id="taskAnswer" class="modal-input" autocomplete="off" maxlength="6" minlength="6" autocapitalize="characters" spellcheck="false" aria-label="6-Buchstaben-Klartext"><p>Falsche oder zu schnelle Antworten beenden den Versuch und starten den Cooldown.</p>`
       : kind==='visit'
       ? `<p class="modal-copy">Gehe zum geheimen Punkt in der Zone. Das Ziel erscheint auf deiner Karte. Bleib in einem sicheren, öffentlichen Bereich.</p><p id="visitTaskStatus">Zielsuche läuft · 120 Sekunden</p>`
       : kind==='photo'

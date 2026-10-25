@@ -153,7 +153,7 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
       const kind=['cipher','visit','stay','photo'].includes(input.kind) ? input.kind : 'cipher';
       if (kind==='photo' && room.photoMetadata?.[uid]?.roundId===(room.roundId || room.startedAt || room.createdAt)) throw new Error('PHOTO_ALREADY_SUBMITTED');
       const id=crypto.randomUUID();
-      const task={id,kind,createdAt:timestamp,expiresAt:timestamp+(kind==='stay'?180000:kind==='photo'?300000:kind==='cipher'?180000:120000),failed:false,completed:false};
+      const task={id,kind,createdAt:timestamp,expiresAt:timestamp+(kind==='stay'?180000:kind==='photo'?300000:kind==='cipher'?150000:120000),failed:false,completed:false};
       if (kind==='visit') {
         if (!freshAccurate(player,timestamp)) throw new Error('FRESH_GPS_REQUIRED');
         const points=Object.values(room.objectives || {}); if (!points.length) throw new Error('NO_OBJECTIVES');
@@ -163,16 +163,11 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
       if (kind==='stay') { if (!freshAccurate(player,timestamp)) throw new Error('FRESH_GPS_REQUIRED'); task.targetLocation=player.location; task.duration=60000; task.lastProofAt=timestamp; task.progressSince=timestamp; }
       if (kind==='cipher') {
         const alphabet='ABCDEFGHJKLMNPQRSTUVWXYZ';
-        task.answer=Array.from(crypto.getRandomValues(new Uint8Array(12)),byte=>alphabet[byte%alphabet.length]).join('');
-        const keys=['NOVA','LUNA','KITE','ECHO','MINT','WOLF'];
+        task.answer=Array.from(crypto.getRandomValues(new Uint8Array(6)),byte=>alphabet[byte%alphabet.length]).join('');
+        const keys=['MAP','SUN','FOX','CAT','FUN','JET'];
         const key=keys[crypto.getRandomValues(new Uint32Array(1))[0]%keys.length];
-        const orders=[[2,0,3,1],[1,3,0,2],[3,1,2,0],[0,2,1,3]];
-        const order=orders[crypto.getRandomValues(new Uint32Array(1))[0]%orders.length];
-        let transposed='';
-        for(const column of order) for(let row=0;row<3;row++) transposed+=task.answer[row*4+column];
-        const ciphertext=Array.from(transposed,(char,i)=>String.fromCharCode(65+(char.charCodeAt(0)-65+key.charCodeAt(i%key.length)-65)%26)).join('');
-        task.prompt=`KRYPTANALYSE · 180 SEKUNDEN\n1. Vigenère rückwärts: Ziehe den Schlüssel wiederholt Buchstabe für Buchstabe ab (A=0, B=1 … Z=25). Schlüssel: ${key}.\n2. Spaltentransposition rückwärts: Schreibe die 12 Zeichen spaltenweise von oben nach unten in ein Raster mit 3 Zeilen und 4 Spalten. Fülle die Spalten in dieser Reihenfolge: ${order.map(i=>i+1).join('–')}.\n3. Lies das Raster zeilenweise. Gib den 12-stelligen Code ein.\n\nVERSCHLÜSSELTER TEXT: ${transposed.replace(/[A-Z]/g,c=>String.fromCharCode(65+(c.charCodeAt(0)-65+key.charCodeAt(0)-65)%26))}`;
-        task.prompt=`KRYPTANALYSE · 180 SEKUNDEN\n1. Vigenère rückwärts: Ziehe den Schlüssel wiederholt Buchstabe für Buchstabe ab (A=0, B=1 … Z=25). Schlüssel: ${key}.\n2. Spaltentransposition rückwärts: Schreibe die 12 Zeichen spaltenweise von oben nach unten in ein Raster mit 3 Zeilen und 4 Spalten. Fülle die Spalten in dieser Reihenfolge: ${order.map(i=>i+1).join('–')}.\n3. Lies das Raster zeilenweise. Gib den 12-stelligen Code ein.\n\nVERSCHLÜSSELTER TEXT: ${ciphertext}`;
+        const ciphertext=Array.from(task.answer,(char,i)=>String.fromCharCode(65+(char.charCodeAt(0)-65+key.charCodeAt(i%key.length)-65+26)%26)).join('');
+        task.prompt=`KRYPTANALYSE · 150 SEKUNDEN\nEntschlüssele den 6-Buchstaben-Code mit Vigenère. Schlüssel: ${key}.\nZiehe an jeder Stelle den Schlüsselwert vom Textwert ab (A=0 bis Z=25). Bei einem Ergebnis unter A zählst du am Alphabetende weiter. Wiederhole den Schlüssel (${key}${key}).\nBeispiel: C minus B ergibt B.\n\nVERSCHLÜSSELTER TEXT: ${ciphertext}`;
       }
       player.activeTask=task;
       return {room,result:{id,kind,prompt:task.prompt,targetLocation:task.targetLocation,expiresAt:task.expiresAt,duration:task.duration}};
