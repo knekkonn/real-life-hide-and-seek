@@ -536,6 +536,51 @@ test('new round resets player locations and tracks and last departure clears all
   await applyAction(room,'other',{action:'leaveRoom'});
   assert.equal(room.phase,'closed');assert.deepEqual(room.players,{});assert.deepEqual(room.photoMetadata,{});assert.deepEqual(room.roundTracks,{});assert.deepEqual(room.restrictedZones,{});assert.equal(room.hostId,null);assert.equal(room.settings.center,null);
 });
+test('new round keeps caught players in the room and removes only players who left',async()=>{
+  const room=playing();room.phase='finished';
+  room.players.guest.active=false;room.players.guest.status='caught';room.players.guest.role='spectator';
+  room.players.other.active=false;room.players.other.status='left';
+  await applyAction(room,'host',{action:'newRound'});
+  assert.deepEqual(Object.keys(room.players).sort(),['guest','host']);
+  assert.equal(room.players.guest.active,true);assert.equal(room.players.guest.status,'waiting');
+  assert.equal(room.players.guest.role,'waiting');assert.equal(room.players.host.isHost,true);
+});
+test('instant restart atomically starts a fresh countdown with the same roster and rotated roles',async()=>{
+  const room=playing();room.phase='finished';room.roundId='old-round';
+  room.settings.gameDuration=900;room.settings.center={lat:52.5,lng:13.4};
+  room.players.guest.active=false;room.players.guest.status='caught';
+  room.photoMetadata={guest:{image:'private'}};room.roundTracks={host:{points:[[1,1]]}};
+  const players=Object.keys(room.players).sort();
+  const result=await applyAction(room,'host',{action:'restartRound'});
+  assert.equal(result.room.phase,'countdown');assert.notEqual(result.room.roundId,'old-round');
+  assert.deepEqual(Object.keys(result.room.players).sort(),players);
+  assert.ok(Object.values(result.room.players).every(player=>player.active));
+  assert.notEqual(result.room.players.host.role,'seeker','the previous Seeker rotates out when the roster allows it');
+  assert.equal(Object.values(result.room.players).filter(player=>player.role==='seeker').length,1);
+  assert.deepEqual(result.room.settings.center,{lat:52.5,lng:13.4});assert.equal(result.room.settings.gameDuration,900);
+  assert.deepEqual(result.room.photoMetadata,{});assert.deepEqual(result.room.roundTracks,{});
+  assert.ok(result.room.phaseEndsAt>Date.now());
+});
+test('instant restart rejects an undersized roster without changing the finished round',async()=>{
+  const room=playing();room.phase='finished';room.players.guest.status='left';room.players.guest.active=false;room.players.other.status='left';room.players.other.active=false;
+  await assert.rejects(applyAction(room,'host',{action:'restartRound'}),/NOT_ENOUGH_PLAYERS/);
+  assert.equal(room.phase,'finished');assert.equal(room.players.guest.status,'left');
+});
+test('leaving the room immediately finishes a round when only Hiders remain',async()=>{
+  const room=playing();room.players.host.role='hider';room.players.host.status='hiding';
+  room.players.guest.role='seeker';room.players.guest.status='seeker';
+  await applyAction(room,'guest',{action:'leaveRoom'});
+  assert.equal(room.phase,'finished');assert.equal(room.winner,'hiders');
+  assert.match(room.announcement.message,/keine Seeker mehr/i);
+});
+test('leaving the room ends the round as soon as one active player remains',async()=>{
+  const room=playing();
+  await applyAction(room,'guest',{action:'leaveRoom'});
+  assert.equal(room.phase,'playing');
+  await applyAction(room,'other',{action:'leaveRoom'});
+  assert.equal(room.phase,'finished');assert.equal(room.winner,'seekers');
+  assert.equal(room.roundResults.length,3);
+});
 test('a host leaving an active round transfers control and is not restored next round', async () => {
   const room=playing(); room.phase='finished';
   await applyAction(room,'host',{action:'leaveRoom'});
