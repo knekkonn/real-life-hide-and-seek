@@ -4,6 +4,7 @@ import { initBackend, getBackendMode, getPlayerUid, getAccountInfo, registerAcco
 import { MAX_PLAYERS, MIN_PLAYERS } from './config.js';
 import { COSMETIC_IDS } from './profile.js';
 import { SKILLS, SKILL_IDS, DEFAULT_SETTINGS, skillTuning } from './skills.js';
+import { createSkillLabSession, setSkillLabRadius, queueSkillLabPlacement, activateSkillLabSkill, moveSkillLabTarget, attemptSkillLabCatch, skillLabSnapshot } from './skill-lab.js';
 import {
   createRoomData, addPlayerToRoom, updateSettings, startCountdown, advanceExpiredPhase,
   maybePayTimeReward, updatePlayerLocation, requestCatch, buySkill,
@@ -14,7 +15,7 @@ import { clamp, now, formatTime, escapeHTML, randomCode, distanceMeters, Sound, 
 
 const $ = (id) => document.getElementById(id);
 const state = {
-  uid:null, playerName:'', roomCode:null, room:null, profile:null, testModeExpiresAt:0, unsubscribe:null, connected:true,
+  uid:null, playerName:'', roomCode:null, room:null, profile:null, testModeExpiresAt:0, skillLabSession:null, skillLabTimer:null, unsubscribe:null, connected:true,
   ownLocation:null, watchId:null, gpsPending:false, gpsSyncStatus:'idle', lastLocationWrite:0,
   lastAnnouncementId:null, lastSeekerSideAnnouncementId:null, subscriptionStartedAt:0, seenCatchRequest:null,
   revealDismissedPhase:null, lastCountdownSecond:null, currentTab:'mapTab', lastCelebratedRoundId:null, lastTracksRoundId:null,
@@ -126,10 +127,99 @@ async function unlockTestMode() {
     let storage=false; try { const key='hs-test-'+Math.random(); localStorage.setItem(key,'1'); storage=localStorage.getItem(key)==='1'; localStorage.removeItem(key); } catch {}
     diagnostics.push(['Lokaler Speicher',storage,storage?'verfügbar':'Browser-Speicher blockiert']);
     const start=performance.now(); try { await getAccountProfile(); diagnostics.push(['Profil-API',true,`Antwort in ${Math.round(performance.now()-start)} ms`]); } catch(error) { diagnostics.push(['Profil-API',false,error.message]); }
-    $('testDiagnostics').innerHTML=diagnostics.map(([label,ok,detail])=>`<p data-ok="${ok}"><strong>${escapeHTML(label)}:</strong> ${escapeHTML(detail)}</p>`).join('')+`<p>Testmodus für 30 Minuten freigeschaltet.</p>`;
+    $('testDiagnostics').innerHTML=diagnostics.map(([label,ok,detail])=>`<p data-ok="${ok}"><strong>${escapeHTML(label)}:</strong> ${escapeHTML(detail)}</p>`).join('')+`<p>Spiel- und Testmodus für 30 Minuten freigeschaltet.</p>`;
     $('testDiagnostics').classList.remove('hidden');
-    toast('Testmodus aktiv','Diagnose läuft; es werden keine Testspieler in Live-Räume eingefügt.','success');
+    $('skillLab').classList.remove('hidden');
+    resetSkillLab('seeker');
+    clearInterval(state.skillLabTimer);
+    state.skillLabTimer=window.setInterval(renderSkillLab,1000);
+    toast('Trainingsmodus aktiv','Probiere beide Rollen und alle Fähigkeiten in einer isolierten Runde aus.','success');
   } catch(error) { toast('Testmodus gesperrt',error.message||'Zugangscode prüfen.','warn'); }
+}
+
+function resetSkillLab(role=state.skillLabSession?.role||'seeker') {
+  const radius=Number($('skillLabRadius')?.value)||500;
+  state.skillLabSession=createSkillLabSession(role,radius);
+  if($('skillLabCatchDistance')) $('skillLabCatchDistance').value='6';
+  renderSkillLab();
+}
+
+function renderSkillLab() {
+  const session=state.skillLabSession;
+  if(!session||!$('skillLab')||$('skillLab').classList.contains('hidden')) return;
+  const timeLeft=Math.max(0,Math.ceil((state.testModeExpiresAt-now())/1000));
+  if(timeLeft===0) {
+    state.skillLabSession=null;
+    clearInterval(state.skillLabTimer); state.skillLabTimer=null;
+    $('skillLab').classList.add('hidden'); $('testDiagnostics').classList.add('hidden');
+    toast('Testmodus beendet','Gib den Zugangscode erneut ein, um weiterzutesten.','info');
+    return;
+  }
+  const snapshot=skillLabSnapshot(session,now());
+  $('skillLabTime').textContent=`${Math.floor(timeLeft/60)}:${String(timeLeft%60).padStart(2,'0')} MIN`;
+  if(document.activeElement!==$('skillLabRadius')) $('skillLabRadius').value=String(session.radius);
+  document.querySelectorAll('[data-lab-role]').forEach(button=>{
+    const active=button.dataset.labRole===session.role;
+    button.classList.toggle('is-active',active); button.setAttribute('aria-pressed',String(active));
+  });
+  $('skillLabSkillCount').textContent=`${snapshot.inventory.length} bereit`;
+  const actors=[session.self,...snapshot.actors];
+  const marker=(actor)=>`<div class="skill-lab-marker ${actor.id==='self'?'self':actor.role}${actor.tracked?' is-tracked':''}${actor.id==='self'&&session.effects.shield?' is-shielded':''}${actor.id==='self'&&session.effects.ghostUntil>now()?' is-ghosted':''}${actor.id==='self'&&session.effects.silentUntil>now()?' is-silent':''}" style="left:${actor.x}%;top:${actor.y}%" aria-label="${escapeHTML(actor.label)}"><span>${actor.id==='self'?'DU':actor.role==='seeker'?'S':'H'}</span><small>${escapeHTML(actor.label)}</small></div>`;
+  const trapMarkers=snapshot.traps.map(trap=>`<div class="skill-lab-marker trap" style="left:${trap.x}%;top:${trap.y}%" aria-label="Trainingsfalle"><span>⌗</span><small>Falle</small></div>`).join('');
+  const decoyMarkers=snapshot.decoys.map(decoy=>`<div class="skill-lab-marker decoy" style="left:${decoy.x}%;top:${decoy.y}%" aria-label="Täusch-Ping"><span>◈</span><small>Falsches Signal</small></div>`).join('');
+  $('skillLabMap').classList.toggle('is-placing',snapshot.placementPending);
+  $('skillLabMap').classList.toggle('is-jammed',snapshot.jammed);
+  $('skillLabMap').classList.toggle('is-sprinting',session.effects.sprintUntil>now());
+  $('skillLabCenterDecoyBtn').classList.toggle('hidden',!snapshot.placementPending);
+  $('skillLabMap').innerHTML=`<div class="skill-lab-grid"></div><div class="skill-lab-zone" aria-hidden="true"></div><div class="skill-lab-center" aria-hidden="true">◎</div>${actors.map(marker).join('')}${trapMarkers}${decoyMarkers}${snapshot.jammed?'<div class="skill-lab-feedback">RADAR STATIC</div>':''}${session.effects.sprintUntil>now()?'<div class="skill-lab-feedback sprint">SPRINT ALARM · BEWEGUNG ERKANNT</div>':''}${snapshot.caught?'<div class="skill-lab-result">TRAININGSFANG</div>':''}${snapshot.placementPending?'<div class="skill-lab-place-prompt">Tippe in den Spielkreis<br><small>Zum Platzieren des Täusch-Pings</small></div>':''}`;
+  const active=snapshot.effects.map(effect=>{
+    const names={sonarUntil:'Sonar',trackerUntil:'Tracker',compassUntil:'Kompass',jammerUntil:'Jammer',sprintUntil:'Sprint-Alarm',ghostUntil:'Geist-Modus',seekerradarUntil:'Seeker-Radar',silentUntil:'Leise Sohlen'};
+    return `${names[effect.key]||'Effekt'} · ${effect.remainingSeconds}s`;
+  });
+  if(session.effects.shield) active.push('Schild bereit');
+  if(session.effects.lastSweepCount!==undefined) active.push(`Fallen geräumt · ${session.effects.lastSweepCount}`);
+  const latest=snapshot.log[0]||'Fähigkeit auswählen oder Fangradius testen.';
+  const hint=snapshot.placementPending?'Tippe auf einen Punkt innerhalb der Zone, um den Marker zu setzen.':snapshot.jammed?`${latest} · Jammer aktiv, Seeker-Radar blockiert.`:active.length?`${latest} · Aktiv: ${active.join(' · ')}`:latest;
+  $('skillLabHint').textContent=hint;
+  $('skillLabHint').dataset.result=/außer reichweite|außerhalb von 8 m/i.test(hint)?'error':/erfolgreich|abgewehrt|gesetzt|entfernt|aktiv/i.test(hint)?'success':'';
+  $('skillLabCatchControls').classList.toggle('is-hider-lab',session.role==='hider');
+  $('skillLabCatchBtn').textContent=session.role==='seeker'?'Fangversuch testen':'Seeker-Fangversuch testen';
+  const roleSkills=SKILL_IDS.filter(id=>SKILLS[id].side===session.role);
+  $('skillLabSkills').innerHTML=roleSkills.map(id=>{
+    const skill=skillTuning(id,session.radius),ready=session.inventory.includes(id),pending=session.placementPending&&id==='decoy';
+    const extra=id==='sweeper'?`Räumradius ${skill.sweepRadius} m`:id==='decoy'?`Platzierung bis ${skill.decoyRange} m`:id==='trap'?`Wirkung ${skill.trapRadius} m`:skill.duration?`${skill.duration} Sek.`:'Sofort';
+    const action=id==='decoy'?'Punkt wählen':ready?'Jetzt einsetzen':'Eingesetzt';
+    return `<article class="skill-lab-card${ready?'':' is-used'}"><div class="skill-lab-card-top"><span class="skill-lab-icon">${escapeHTML(skill.icon)}</span><span class="tiny-label">${escapeHTML(extra)}</span></div><h4>${escapeHTML(skill.name)}</h4><p>${escapeHTML(skill.description)}</p><button type="button" class="button ${ready?'button-secondary':''}" data-lab-skill="${id}" ${ready?'':'disabled'}>${pending?'Jetzt auf der Karte platzieren':action}</button></article>`;
+  }).join('');
+  $('skillLabLog').innerHTML=snapshot.log.length?snapshot.log.map(line=>`<p>${escapeHTML(line)}</p>`).join(''):'<p>Das Protokoll ist leer.</p>';
+}
+
+function commitLabCatchDistance({attempt=false}={}) {
+  const session=state.skillLabSession;if(!session) return;
+  const input=$('skillLabCatchDistance');
+  const max=Math.max(1,Math.floor(session.radius));
+  const distance=clamp(Math.round(Number(input.value)||0),0,max);
+  input.value=String(distance);
+  moveSkillLabTarget(session,distance);
+  if(attempt) {
+    const result=attemptSkillLabCatch(session);
+    $('skillLabHint').textContent=result.message;
+    $('skillLabHint').dataset.result=result.ok?'success':'error';
+  } else {
+    $('skillLabHint').textContent=`Trainingsgegner auf ${distance} m gesetzt. ${distance<=8?'Der Fangradius ist erreicht.':'Außerhalb des 8-m-Fangradius.'}`;
+    $('skillLabHint').dataset.result=distance<=8?'success':'error';
+  }
+  renderSkillLab();
+}
+
+function placeLabDecoy(x,y) {
+  const session=state.skillLabSession;if(!session?.placementPending) return;
+  if(Math.hypot(x-50,y-50)>42) {
+    session.log.unshift('Der Punkt muss innerhalb des markierten Spielfelds liegen.'); session.log=session.log.slice(0,8); renderSkillLab(); return;
+  }
+  const result=activateSkillLabSkill(session,'decoy',{x,y});
+  if(!result.ok) { session.log.unshift(result.reason); session.log=session.log.slice(0,8); }
+  renderSkillLab();
 }
 
 function toast(title, message='', type='info', duration=3800) {
@@ -209,6 +299,30 @@ async function startApp() {
   $('profileSaveBtn').addEventListener('click', saveProfileFromForm);
   $('accountSignOutBtn').addEventListener('click', signOutFromForm);
   $('testModeBtn').addEventListener('click', unlockTestMode);
+  document.querySelectorAll('[data-lab-role]').forEach(button=>button.addEventListener('click',()=>resetSkillLab(button.dataset.labRole)));
+  $('resetSkillLabBtn').addEventListener('click',()=>resetSkillLab());
+  $('skillLabRadius').addEventListener('change',event=>{
+    const value=clamp(50+Math.round((Number(event.target.value)-50)/25)*25,50,2000);
+    event.target.value=String(value); if(state.skillLabSession) setSkillLabRadius(state.skillLabSession,value); renderSkillLab();
+  });
+  $('skillLabSkills').addEventListener('click',event=>{
+    const button=event.target.closest('[data-lab-skill]'); if(!button||!state.skillLabSession) return;
+    const skillId=button.dataset.labSkill;
+    if(skillId==='decoy'&&!state.skillLabSession.placementPending) { queueSkillLabPlacement(state.skillLabSession); renderSkillLab(); return; }
+    const result=activateSkillLabSkill(state.skillLabSession,skillId);
+    if(!result.ok&&!result.needsPlacement) $('skillLabHint').textContent=result.reason;
+    renderSkillLab();
+  });
+  $('skillLabMap').addEventListener('click',event=>{
+    const session=state.skillLabSession; if(!session?.placementPending) return;
+    const rect=event.currentTarget.getBoundingClientRect();
+    const x=8+(event.clientX-rect.left)/rect.width*84, y=8+(event.clientY-rect.top)/rect.height*84;
+    placeLabDecoy(x,y);
+  });
+  $('skillLabCenterDecoyBtn').addEventListener('click',()=>placeLabDecoy(50,50));
+  $('skillLabMoveTargetBtn').addEventListener('click',()=>commitLabCatchDistance());
+  $('skillLabCatchBtn').addEventListener('click',()=>commitLabCatchDistance({attempt:true}));
+  $('clearSkillLabLogBtn').addEventListener('click',()=>{if(state.skillLabSession){state.skillLabSession.log=[];renderSkillLab();}});
   $('createRoomBtn').addEventListener('click', createLobby);
   $('joinRoomBtn').addEventListener('click', joinLobby);
   $('roomCode').addEventListener('input', (event) => { event.target.value = event.target.value.replace(/\D/g,'').slice(0,4); });
@@ -239,24 +353,49 @@ async function startApp() {
   $('modalRoot').addEventListener('click', (event) => { if (event.target.hasAttribute('data-close-modal')) closeModal(); });
   $('mapRadius').addEventListener('input', (event) => {
     const radius = Number(event.target.value);
+    $('mapRadiusNumber').value=String(radius);
     $('mapRadiusValue').textContent = `${radius} m`;
     updateLobbyMap({ ...state.room, settings:{...state.room.settings, radius} }, isHost(), saveCenter);
     clearTimeout(state.radiusSaveTimer);
     state.radiusSaveTimer=setTimeout(()=>saveSettings({radius}),300);
   });
+  $('mapRadiusNumber').addEventListener('change',event=>{
+    const radius=clamp(50+Math.round((Number(event.target.value)-50)/25)*25,50,2000);
+    event.target.value=String(radius); $('mapRadius').value=String(radius); $('mapRadiusValue').textContent=`${radius} m`;
+    clearTimeout(state.radiusSaveTimer);
+    if(state.room) updateLobbyMap({...state.room,settings:{...state.room.settings,radius}},isHost(),saveCenter);
+    saveSettings({radius});
+  });
+  const commitMinutes=(inputId,key,min,max)=>{
+    const input=$(inputId),value=clamp(Math.round(Number(input.value)||min),min,max);
+    input.value=String(value);
+    $(key==='hideDuration'?'hideDurationValue':'gameDurationValue').textContent=formatTime(value*60);
+    saveSettings({[key]:value*60}); Sound.click();
+  };
+  $('hideDurationMinutes').addEventListener('change',()=>commitMinutes('hideDurationMinutes','hideDuration',2,5));
+  $('gameDurationMinutes').addEventListener('change',()=>commitMinutes('gameDurationMinutes','gameDuration',15,30));
   document.querySelectorAll('[data-step]').forEach((button) => button.addEventListener('click', () => {
     const key = button.dataset.step;
     const delta = Number(button.dataset.delta);
     const current = Number(state.room?.settings?.[key] ?? DEFAULT_SETTINGS[key]);
     const min = key === 'hideDuration' ? 120 : 900;
     const max = key === 'hideDuration' ? 300 : 1800;
-    saveSettings({ [key]:clamp(current + delta, min, max) });
+    const value=clamp(current + delta, min, max);
+    saveSettings({ [key]:value });
+    $(key==='hideDuration'?'hideDurationMinutes':'gameDurationMinutes').value=String(Math.round(value/60));
+    $(key==='hideDuration'?'hideDurationValue':'gameDurationValue').textContent=formatTime(value);
     Sound.click();
   }));
   document.querySelectorAll('input[name="mode"]').forEach((input) => input.addEventListener('change', () => saveSettings({ mode:input.value })));
   document.querySelectorAll('[data-skill]').forEach((input) => input.addEventListener('change', () => saveSettings({ skills:{ [input.dataset.skill]:input.checked } })));
   $('announcementsToggle').addEventListener('change', (event) => saveSettings({ announcements:event.target.checked }));
-  $('seekerCount').addEventListener('change', (event) => saveSettings({ seekerCount:Number(event.target.value) }));
+  $('seekerCount').addEventListener('change', (event) => {
+    const max=Math.max(1,Math.min(10,activePlayers().length-1));
+    const count=clamp(Math.round(Number(event.target.value)||1),1,max);
+    event.target.value=String(count); event.target.max=String(max);
+    $('hiderCountValue').textContent=String(Math.max(0,activePlayers().length-count));
+    saveSettings({ seekerCount:count });
+  });
   const gameTabs=[...document.querySelectorAll('.game-tab')];
   gameTabs.forEach((button) => button.addEventListener('click', () => selectTab(button.dataset.tab)));
   document.querySelectorAll('.tab-content').forEach((panel) => {
@@ -505,12 +644,16 @@ function renderLobby() {
   $('hideDurationValue').textContent = formatTime(settings.hideDuration);
   $('gameDurationValue').textContent = formatTime(settings.gameDuration);
   if (document.activeElement !== $('mapRadius')) $('mapRadius').value = settings.radius;
+  if (document.activeElement !== $('mapRadiusNumber')) $('mapRadiusNumber').value = settings.radius;
   $('mapRadiusValue').textContent = `${settings.radius} m`;
+  if (document.activeElement !== $('hideDurationMinutes')) $('hideDurationMinutes').value = String(Math.round(settings.hideDuration/60));
+  if (document.activeElement !== $('gameDurationMinutes')) $('gameDurationMinutes').value = String(Math.round(settings.gameDuration/60));
   $('announcementsToggle').checked = settings.announcements !== false;
   const seekerCount = Number(settings.seekerCount) || 1;
   if (document.activeElement !== $('seekerCount')) $('seekerCount').value = String(seekerCount);
+  const maxSeekers=Math.max(1,Math.min(10,active.length-1));
+  $('seekerCount').max=String(maxSeekers);
   $('hiderCountValue').textContent = String(Math.max(0, active.length - seekerCount));
-  $('seekerCount').querySelectorAll('option').forEach((option) => { option.disabled = Number(option.value) >= active.length; });
   if (seekerCount >= active.length) $('hiderCountValue').textContent = 'mind. 1';
   document.querySelectorAll('input[name="mode"]').forEach((input) => { input.checked = input.value === settings.mode; });
   document.querySelectorAll('[data-skill]').forEach((input) => { input.checked = settings.skills?.[input.dataset.skill] !== false; });
