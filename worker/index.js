@@ -83,7 +83,6 @@ export default {
         }
         const {room:next,result}=await applyAction(room,uid,input);
         if (!next) return reply({error:'ACTION_REJECTED'},409);
-        for (const [id,req] of Object.entries(next.joinRequests || {})) if (Date.now()-req.createdAt>300000) delete next.joinRequests[id];
         for (const key of ['traps','decoys']) for (const [id,item] of Object.entries(next[key] || {})) if (item.expiresAt<Date.now()) delete next[key][id];
         const serialized=JSON.stringify(next);
         if (serialized.length>1024000) return reply({error:'ROOM_LIMIT'},409);
@@ -93,7 +92,7 @@ export default {
       return reply({error:'CONCURRENT_UPDATE_RETRY'},409);
     } catch (error) {
       const message=error?.message || 'BACKEND_ERROR';
-      const known=/^(UNAUTHENTICATED|NOT_MEMBER|HOST_ONLY|LOBBY_CLOSED|REQUESTS_FULL|INVALID_NAME|REQUEST_EXPIRED|CENTER_REQUIRED|INVALID_GPS|STALE_CATCH|CATCH_RANGE_REQUIRED|TARGET_NOT_CATCHABLE|FRESH_GPS_REQUIRED|INVALID_POINT|TASK_UNAVAILABLE|TASK_COOLDOWN|TASK_ALREADY_ACTIVE|TASK_EXPIRED|NO_OBJECTIVES|INVALID_PHOTO|PHOTO_ALREADY_SUBMITTED|INVALID_CHALLENGE|WRONG_ANSWER|TASK_TOO_FAST|UNKNOWN_ACTION|RATE_LIMIT|FROZEN)$/.test(message);
+      const known=/^(UNAUTHENTICATED|NOT_MEMBER|HOST_ONLY|LOBBY_CLOSED|ROOM_FULL|NAME_IN_USE|INVALID_NAME|CENTER_REQUIRED|INVALID_GPS|STALE_CATCH|CATCH_RANGE_REQUIRED|TARGET_NOT_CATCHABLE|FRESH_GPS_REQUIRED|INVALID_POINT|TASK_UNAVAILABLE|TASK_COOLDOWN|TASK_ALREADY_ACTIVE|TASK_EXPIRED|NO_OBJECTIVES|INVALID_PHOTO|PHOTO_ALREADY_SUBMITTED|INVALID_CHALLENGE|WRONG_ANSWER|TASK_TOO_FAST|UNKNOWN_ACTION|RATE_LIMIT|FROZEN)$/.test(message);
       const status=message==='UNAUTHENTICATED'?401:message==='RATE_LIMIT'?429:message==='NOT_MEMBER'||message==='HOST_ONLY'?403:known?409:500;
       return reply({error:known?message:'BACKEND_ERROR'},status);
     }
