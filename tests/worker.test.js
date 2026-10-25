@@ -41,27 +41,40 @@ test('a code only requests entry; a host must approve membership', async () => {
   assert.ok(room.players.guest);
   await assert.rejects(applyAction(room,'guest',{action:'settings',patch:{radius:2000}}),/HOST_ONLY/);
 });
-test('catch requires the target identity and a current request ID; accepted infection is applied once', async () => {
+test('a verified in-range catch is applied immediately without target confirmation', async () => {
   const room=playing();room.settings.mode='infected';
   await applyAction(room,'host',{action:'requestCatch',targetId:'guest'});
-  const id=room.pendingCatch.id;
-  await assert.rejects(applyAction(room,'other',{action:'respondToCatch',accepted:true,requestId:id}));
-  assert.equal(room.players.guest.role,'hider');
-  await assert.rejects(applyAction(room,'guest',{action:'respondToCatch',accepted:true,requestId:'old'}),/STALE_CATCH/);
-  await applyAction(room,'guest',{action:'respondToCatch',accepted:true,requestId:id});
+  assert.equal(room.pendingCatch,null);
   assert.equal(room.players.guest.role,'seeker');
-  await assert.rejects(applyAction(room,'guest',{action:'respondToCatch',accepted:true,requestId:id}),/STALE_CATCH/);
+  assert.equal(room.players.guest.status,'infected');
+  await assert.rejects(applyAction(room,'guest',{action:'respondToCatch',accepted:true,requestId:'legacy'}),/UNKNOWN_ACTION/);
+  await assert.rejects(applyAction(room,'host',{action:'requestCatch',targetId:'guest'}),/TARGET_NOT_CATCHABLE/);
+});
+test('catch requires fresh accurate positions within the allowed radius', async () => {
+  const room=playing();
+  room.players.guest.location={lat:.001,lng:0,accuracy:5,measuredAt:Date.now()};room.players.guest.locationAt=Date.now();
+  await assert.rejects(applyAction(room,'host',{action:'requestCatch',targetId:'guest'}),/CATCH_RANGE_REQUIRED/);
+  assert.equal(room.players.guest.role,'hider');
+  room.players.guest.location={lat:0,lng:0,accuracy:45,measuredAt:Date.now()};room.players.guest.locationAt=Date.now();
+  await assert.rejects(applyAction(room,'host',{action:'requestCatch',targetId:'guest'}),/FRESH_GPS_REQUIRED/);
 });
 test('forged reward submissions cannot award currency', async () => {
   const room=playing();const before=room.players.guest.coins;
   await assert.rejects(applyAction(room,'guest',{action:'completeTask',kind:'code',proof:{id:'forged',answer:42}}),/INVALID_CHALLENGE/);
   assert.equal(room.players.guest.coins,before);
 });
-test('server-issued double ciphers are private, rate-limited and redeem once', async () => {
+test('server-issued Vigenere and columnar ciphers are private, rate-limited and redeem once', async () => {
   const room=playing(); const timestamp=Date.now();
   const {result}=await applyAction(room,'guest',{action:'beginTask',kind:'cipher'},timestamp);
   const challenge=room.players.guest.activeTask;
-  assert.match(result.prompt,/Alphabet-Spiegel/);
+  assert.match(result.prompt,/Vigenère rückwärts/);
+  assert.match(result.prompt,/Spaltentransposition/);
+  const key=result.prompt.match(/Schlüssel: ([A-Z]+)/)[1];
+  const order=result.prompt.match(/Reihenfolge: ([1-4]–[1-4]–[1-4]–[1-4])/)[1].split('–').map(n=>Number(n)-1);
+  const ciphertext=result.prompt.match(/VERSCHLÜSSELTER TEXT: ([A-Z]{12})/)[1];
+  const transposed=Array.from(ciphertext,(char,i)=>String.fromCharCode(65+(char.charCodeAt(0)-65-(key.charCodeAt(i%key.length)-65)+26)%26)).join('');
+  const grid=Array(12);let cursor=0;for(const col of order)for(let row=0;row<3;row++)grid[row*4+col]=transposed[cursor++];
+  assert.equal(grid.join(''),challenge.answer,'published instructions must decode the server-held code');
   assert.equal(publicRoom(room,'guest',timestamp).players.guest.activeTask.answer,undefined);
   assert.equal(publicRoom(room,'host',timestamp).players.guest.activeTask,undefined);
   const tooFast=await applyAction(room,'guest',{action:'completeTask',proof:{id:result.id,answer:challenge.answer}},timestamp+1000);
@@ -72,10 +85,10 @@ test('server-issued double ciphers are private, rate-limited and redeem once', a
   const successRoom=playing();
   const started=await applyAction(successRoom,'guest',{action:'beginTask',kind:'cipher'},timestamp);
   const answer=successRoom.players.guest.activeTask.answer;
-  const reward=await applyAction(successRoom,'guest',{action:'completeTask',proof:{id:started.result.id,answer}},timestamp+16000);
+  const reward=await applyAction(successRoom,'guest',{action:'completeTask',proof:{id:started.result.id,answer}},timestamp+31000);
   assert.equal(reward.result,true);
   assert.equal(successRoom.players.guest.coins,25);
-  await assert.rejects(applyAction(successRoom,'guest',{action:'completeTask',proof:{id:started.result.id,answer}},timestamp+17000),/INVALID_CHALLENGE/);
+  await assert.rejects(applyAction(successRoom,'guest',{action:'completeTask',proof:{id:started.result.id,answer}},timestamp+32000),/INVALID_CHALLENGE/);
 });
 
 test('visit tasks select private in-zone targets and movement failures trigger cooldown', async () => {

@@ -17,6 +17,7 @@
 .zone-preview p, .gps-status { font-size: 13px; line-height: 1.5; color: var(--muted); }
 .gps-status { padding: 16px; }
 .task-cooldown { min-height: 1.4em; color: var(--muted); margin-top: 12px; }
+.task-backend-notice { border:1px solid rgba(255,202,106,.35); border-radius:9px; padding:10px 12px; color:#e2c27d; background:rgba(255,202,106,.06); font-size:.83rem; }
 .round-end { position: fixed; inset: 0; z-index: 800; display: grid; place-items: center; padding: 18px; background: rgba(3,8,13,.94); }
 .round-end-card { width: min(100%,620px); padding: clamp(24px,6vw,52px); text-align: center; }
 .round-end-card h2 { font-size: clamp(2.3rem,7vw,4rem); margin: 12px 0; }

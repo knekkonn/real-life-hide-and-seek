@@ -71,7 +71,7 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
   }
   if (action === 'leaveRoom' && room.joinRequests?.[uid] && !room.players[uid]) { delete room.joinRequests[uid]; return {room,result:true}; }
   const player = member(room,uid);
-  if (room.phase === 'playing' && (player.effects?.frozenUntil || 0)>timestamp && !['updatePlayerLocation','leaveRoom','respondToCatch'].includes(action)) throw new Error('FROZEN');
+  if (room.phase === 'playing' && (player.effects?.frozenUntil || 0)>timestamp && !['updatePlayerLocation','leaveRoom'].includes(action)) throw new Error('FROZEN');
   if (room.phase === 'closed' && action !== 'leaveRoom') throw new Error('LOBBY_CLOSED');
   if (action === 'approveJoin') {
     host(room,uid);
@@ -127,10 +127,13 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
       }
       result=await game.updatePlayerLocation(context,uid,{...location,measuredAt:timestamp}); break;
     }
-    case 'requestCatch': result=await game.requestCatch(context,uid,input.targetId); break;
-    case 'respondToCatch':
-      if (!input.requestId || input.requestId !== room.pendingCatch?.id || room.pendingCatch?.targetId !== uid || typeof input.accepted !== 'boolean') throw new Error('STALE_CATCH');
-      result=await game.respondToCatch(context,uid,input.accepted,input.requestId); break;
+    case 'requestCatch': {
+      const target=room.players?.[input.targetId];
+      if(!target || !target.active || target.role!=='hider') throw new Error('TARGET_NOT_CATCHABLE');
+      if(!freshAccurate(player,timestamp) || !freshAccurate(target,timestamp)) throw new Error('FRESH_GPS_REQUIRED');
+      if(distanceMeters(player.location,target.location)>30) throw new Error('CATCH_RANGE_REQUIRED');
+      result=await game.requestCatch(context,uid,input.targetId); break;
+    }
     case 'buySkill': result=await game.buySkill(context,uid,input.skillId); break;
     case 'activateSkill': {
       if (input.skillId === 'decoy' && (!validPoint(input.params?.location) || distanceMeters(input.params.location,room.settings.center) > room.settings.radius)) throw new Error('INVALID_POINT');
@@ -148,7 +151,7 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
       const kind=['cipher','visit','stay','photo'].includes(input.kind) ? input.kind : 'cipher';
       if (kind==='photo' && room.photoMetadata?.[uid]?.roundId===(room.roundId || room.startedAt || room.createdAt)) throw new Error('PHOTO_ALREADY_SUBMITTED');
       const id=crypto.randomUUID();
-      const task={id,kind,createdAt:timestamp,expiresAt:timestamp+(kind==='stay'?180000:kind==='photo'?300000:120000),failed:false,completed:false};
+      const task={id,kind,createdAt:timestamp,expiresAt:timestamp+(kind==='stay'?180000:kind==='photo'?300000:kind==='cipher'?180000:120000),failed:false,completed:false};
       if (kind==='visit') {
         if (!freshAccurate(player,timestamp)) throw new Error('FRESH_GPS_REQUIRED');
         const points=Object.values(room.objectives || {}); if (!points.length) throw new Error('NO_OBJECTIVES');
@@ -157,12 +160,17 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
       }
       if (kind==='stay') { if (!freshAccurate(player,timestamp)) throw new Error('FRESH_GPS_REQUIRED'); task.targetLocation=player.location; task.duration=60000; task.lastProofAt=timestamp; task.progressSince=timestamp; }
       if (kind==='cipher') {
-        const words=['ORCHIDAL','CIPHERS','NIMBUSES','VECTORS','PHANTOMS','QUARTZES','RAVENING','MATRICES','JUNGLES','SIGNALS'];
-        const word=words[crypto.getRandomValues(new Uint32Array(1))[0]%words.length];
-        const shift=crypto.getRandomValues(new Uint32Array(1))[0]%9+3;
-        task.answer=word; task.shift=shift;
-        // Two transformations keep the cipher challenging while still solvable from the instructions.
-        task.prompt=`Doppel-Chiffre: Ziehe zuerst ${shift} ab, danach ersetze jeden Buchstaben mit seinem Alphabet-Spiegel (A↔Z). Ergebnis: ${word.replace(/[A-Z]/g,c=>String.fromCharCode((25-(c.charCodeAt(0)-65)+shift+26)%26+65))}`;
+        const alphabet='ABCDEFGHJKLMNPQRSTUVWXYZ';
+        task.answer=Array.from(crypto.getRandomValues(new Uint8Array(12)),byte=>alphabet[byte%alphabet.length]).join('');
+        const keys=['NOVA','LUNA','KITE','ECHO','MINT','WOLF'];
+        const key=keys[crypto.getRandomValues(new Uint32Array(1))[0]%keys.length];
+        const orders=[[2,0,3,1],[1,3,0,2],[3,1,2,0],[0,2,1,3]];
+        const order=orders[crypto.getRandomValues(new Uint32Array(1))[0]%orders.length];
+        let transposed='';
+        for(const column of order) for(let row=0;row<3;row++) transposed+=task.answer[row*4+column];
+        const ciphertext=Array.from(transposed,(char,i)=>String.fromCharCode(65+(char.charCodeAt(0)-65+key.charCodeAt(i%key.length)-65)%26)).join('');
+        task.prompt=`KRYPTANALYSE · 180 SEKUNDEN\n1. Vigenère rückwärts: Ziehe den Schlüssel wiederholt Buchstabe für Buchstabe ab (A=0, B=1 … Z=25). Schlüssel: ${key}.\n2. Spaltentransposition rückwärts: Schreibe die 12 Zeichen spaltenweise von oben nach unten in ein Raster mit 3 Zeilen und 4 Spalten. Fülle die Spalten in dieser Reihenfolge: ${order.map(i=>i+1).join('–')}.\n3. Lies das Raster zeilenweise. Gib den 12-stelligen Code ein.\n\nVERSCHLÜSSELTER TEXT: ${transposed.replace(/[A-Z]/g,c=>String.fromCharCode(65+(c.charCodeAt(0)-65+key.charCodeAt(0)-65)%26))}`;
+        task.prompt=`KRYPTANALYSE · 180 SEKUNDEN\n1. Vigenère rückwärts: Ziehe den Schlüssel wiederholt Buchstabe für Buchstabe ab (A=0, B=1 … Z=25). Schlüssel: ${key}.\n2. Spaltentransposition rückwärts: Schreibe die 12 Zeichen spaltenweise von oben nach unten in ein Raster mit 3 Zeilen und 4 Spalten. Fülle die Spalten in dieser Reihenfolge: ${order.map(i=>i+1).join('–')}.\n3. Lies das Raster zeilenweise. Gib den 12-stelligen Code ein.\n\nVERSCHLÜSSELTER TEXT: ${ciphertext}`;
       }
       player.activeTask=task;
       return {room,result:{id,kind,prompt:task.prompt,targetLocation:task.targetLocation,expiresAt:task.expiresAt,duration:task.duration}};
@@ -187,7 +195,7 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
         throw new Error('INVALID_CHALLENGE');
       }
       if (task.kind==='cipher') {
-        if (timestamp-task.createdAt<15000) { failTask(player,timestamp); return {room,result:{error:'TASK_TOO_FAST'}}; }
+        if (timestamp-task.createdAt<30000) { failTask(player,timestamp); return {room,result:{error:'TASK_TOO_FAST'}}; }
         if (String(input.proof.answer||'').trim().toUpperCase()!==task.answer) { failTask(player,timestamp); return {room,result:{error:'WRONG_ANSWER'}}; }
       } else if (task.kind==='visit') {
         if (!freshAccurate(player,timestamp) || distanceMeters(player.location,task.targetLocation)>task.radius) { failTask(player,timestamp); return {room,result:{error:'TASK_LOCATION_REQUIRED'}}; }

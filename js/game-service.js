@@ -210,9 +210,9 @@ export async function requestCatch(code, seekerId, targetId) {
     const target = room.players?.[targetId];
     if (room.phase !== 'playing' || !seeker || seeker.role !== 'seeker' || !seeker.active) return null;
     if (!target || target.role !== 'hider' || !target.active) return null;
-    if (room.pendingCatch && (now() - room.pendingCatch.createdAt) < 20_000) return null;
-    room.pendingCatch = { id:randomId('catch'), seekerId, targetId, createdAt:now(), status:'pending' };
-    room.announcement = { id:randomId('announcement'), type:'private', targetId, title:'CATCH CONFIRMATION', message:`${seeker.name} meldet eine Begegnung. Bitte bestätigen.`, createdAt:now() };
+    const timestamp=now();
+    if(!freshCatchLocation(seeker,timestamp) || !freshCatchLocation(target,timestamp) || distanceMeters(seeker.location,target.location)>30) return null;
+    if(!applyCatch(room,seekerId,targetId,timestamp)) return null;
     return room;
   });
 }
@@ -264,6 +264,37 @@ export async function respondToCatch(code, targetId, accepted, requestId=null) {
     }
     return room;
   });
+}
+
+function freshCatchLocation(player,timestamp) {
+  return Boolean(player.location && timestamp-(player.locationAt||0)<=10000 && timestamp>=player.locationAt && Number(player.location.accuracy)<=25);
+}
+
+function applyCatch(room,seekerId,targetId,timestamp) {
+  const target=room.players?.[targetId], seeker=room.players?.[seekerId];
+  if(!target?.active || !seeker?.active || target.role!=='hider' || seeker.role!=='seeker') return false;
+  room.pendingCatch=null;
+  target.effects ||= {};
+  if(target.effects.shield===true) {
+    target.effects.shield=false;
+    room.announcement={id:randomId('announcement'),type:'global',title:'SHIELD ACTIVATED',message:`${target.name} hat den Fang mit einem Schild abgewehrt.`,createdAt:timestamp};
+    return true;
+  }
+  if(room.settings.mode==='infected') {
+    target.role='seeker'; target.status='infected'; target.active=true;
+    const available=eligibleSkills(room.settings,'seeker'); target.inventory=available.length?[randomFrom(available)]:[];
+  } else {
+    target.role='spectator'; target.status='caught'; target.active=false; target.inventory=[];
+  }
+  room.pendingCatch=null;
+  room.announcement=room.settings.announcements===false
+    ? {id:randomId('announcement'),type:'private',targetId:seekerId,title:'CATCH CONFIRMED',message:`${target.name} wurde gefangen.`,createdAt:timestamp}
+    : {id:randomId('announcement'),type:'global',title:'PLAYER CAPTURED',message:room.settings.mode==='infected'?`${target.name} wurde gefangen und ist nun infiziert!`:`${target.name} wurde gefangen!`,createdAt:timestamp};
+  if(!Object.values(room.players||{}).some(player=>player.active && player.role==='hider')) {
+    room.phase='finished'; room.winner='seekers'; room.phaseEndsAt=null; room.photoMetadata={};
+    room.announcement={id:randomId('announcement'),type:'global',title:'MISSION COMPLETE',message:room.settings.mode==='infected'?'Alle Hider wurden infiziert.':'Alle Hider wurden gefangen.',createdAt:timestamp};
+  }
+  return true;
 }
 
 export async function buySkill(code, uid, skillId) {
