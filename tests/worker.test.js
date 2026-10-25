@@ -414,10 +414,11 @@ test('round photo task only shares sanitized JPEG with seekers and erases it on 
   assert.equal(publicRoom(finished.room,'host',timestamp+33000).roundPhotos,undefined);
 
   const exifRoom=playing();const exifStart=await applyAction(exifRoom,'guest',{action:'beginTask',kind:'photo'},timestamp);
-  const exif=new Uint8Array([...jpeg.slice(0,2),0xff,0xe1,0,8,0x45,0x78,0x69,0x66,0,0,...jpeg.slice(2)]);
-  const rejected=await applyAction(exifRoom,'guest',{action:'submitPhoto',taskId:exifStart.result.id,image:'data:image/jpeg;base64,'+Buffer.from(exif).toString('base64')},timestamp+1000);
-  assert.equal(rejected.result.error,'INVALID_PHOTO');
-  assert.equal(exifRoom.photoMetadata?.guest,undefined,'EXIF-bearing images are not stored');
+  const exif=new Uint8Array([...jpeg.slice(0,2),0xff,0xe1,0,8,0x45,0x78,0x69,0x66,0,0,0xff,0xed,0,5,1,2,3,0xff,0xfe,0,5,4,5,6,...jpeg.slice(2)]);
+  const stripped=await applyAction(exifRoom,'guest',{action:'submitPhoto',taskId:exifStart.result.id,image:'data:image/jpeg;base64,'+Buffer.from(exif).toString('base64')},timestamp+1000);
+  assert.equal(stripped.result,true,'the server strips metadata instead of failing an otherwise valid photo');
+  const stored=Uint8Array.from(atob(exifRoom.photoMetadata.guest.image.split(',')[1]),char=>char.charCodeAt(0));
+  assert.equal(stored.some((byte,index)=>byte===0xff&&([0xe1,0xed,0xfe].includes(stored[index+1]))),false,'EXIF, IPTC, and comment segments are removed before persistence');
 });
 
 test('photo download endpoint returns bytes only to active seekers in the live round',async()=>{

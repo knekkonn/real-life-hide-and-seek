@@ -1268,7 +1268,7 @@ async function startTask(kind) {
       : kind==='visit'
       ? `<p class="modal-copy">Gehe zum geheimen Punkt in der Zone. Das Ziel erscheint auf deiner Karte. Bleib in einem sicheren, öffentlichen Bereich.</p><p id="visitTaskStatus">Zielsuche läuft · 120 Sekunden</p>`
       : kind==='photo'
-      ? `<p class="modal-copy">Fotografiere dein Versteck, ohne andere Personen aufzunehmen. Das Bild wird im Browser verkleinert und ohne EXIF-Daten an die Runde übertragen. Es ist für das Suchteam sichtbar und wird beim Rundenende gelöscht.</p><label class="modal-field-label" for="taskPhoto">Kamera oder Bild auswählen</label><input id="taskPhoto" class="modal-input" type="file" accept="image/jpeg,image/png,image/webp" capture="environment"><p>Nur ein kleines JPEG wird übertragen. Das Bild bleibt auf die laufende Runde beschränkt.</p>`
+      ? `<p class="modal-copy">Fotografiere dein Versteck, ohne andere Personen aufzunehmen. Das Bild wird im Browser verkleinert und Metadaten werden vor dem Speichern entfernt. Es ist für das Suchteam sichtbar und wird beim Rundenende gelöscht.</p><label class="modal-field-label" for="taskPhoto">Kamera oder Bild auswählen</label><input id="taskPhoto" class="modal-input" type="file" accept="image/*" capture="environment"><p>Das Foto wird automatisch in ein kleines JPEG umgewandelt. Es bleibt auf die laufende Runde beschränkt.</p><p id="photoUploadStatus" role="status" aria-live="polite"></p>`
       : `<p class="modal-copy">Halte deinen Standort 60 Sekunden lang innerhalb von 10 m. GPS-Lücken über 10 Sekunden, zu ungenaue Messungen oder Bewegung beenden den Versuch.</p><p id="stayTaskStatus">Verbleibende Zeit: 60 s</p>`;
     const titles={cipher:'Tresorcode knacken',visit:'Geheimer Zielpunkt',photo:'Versteck fotografieren',stay:'Versteck halten',scan:'Signal Cache scannen',proximity:'Hider-Signal aufspüren'};
     openModal({kicker:'FIELD CHALLENGE',title:titles[kind]||'Feldaufgabe',body,closeable:['scan','proximity'].includes(kind),actions:[
@@ -1295,9 +1295,20 @@ async function startTask(kind) {
         await completeTask(state.roomCode,state.uid,kind,{id:challenge.id}); closeModal(); toast('Aufgabe geschafft','Belohnung wurde gutgeschrieben.','success');
       }}]:kind==='photo'?[{label:'Foto senden',variant:'button-primary',keepOpen:true,onClick:async()=>{
         const file=$('taskPhoto')?.files?.[0]; if(!file) { toast('Foto fehlt','Nimm ein Foto auf oder wähle ein Bild aus.','warn'); return; }
-        const image=await compressRoundPhoto(file);
-        await workerCommand(state.roomCode,'submitPhoto',{taskId:challenge.id,image});
-        closeModal(); toast('Foto für die Runde gespeichert','Das Suchteam kann es bis zum Rundenende sehen.','success');
+        const button=$('modalActions').querySelector('.button-primary'),status=$('photoUploadStatus');
+        if(button) button.disabled=true;
+        try {
+          if(status) status.textContent='Foto wird verkleinert und bereinigt …';
+          const image=await compressRoundPhoto(file);
+          if(status) status.textContent='Foto wird sicher an die Runde übertragen …';
+          await workerCommand(state.roomCode,'submitPhoto',{taskId:challenge.id,image});
+          closeModal(); toast('Foto für die Runde gespeichert','Das Suchteam kann es bis zum Rundenende sehen.','success');
+        } catch(error) {
+          const serverRejected=['INVALID_PHOTO','INVALID_CHALLENGE','TASK_EXPIRED'].includes(error.code);
+          if(serverRejected) closeModal();
+          else if(status) status.textContent=error.message||'Foto konnte nicht verarbeitet werden. Wähle ein anderes Bild und versuche es erneut.';
+          toast(serverRejected?'Foto-Aufgabe fehlgeschlagen':'Foto konnte nicht gesendet werden',error.message||'Bitte versuche es mit einem JPEG- oder PNG-Foto erneut.',serverRejected?'warn':'danger',6000);
+        } finally { if(button&&$('modalRoot')&&!$('modalRoot').classList.contains('hidden')) button.disabled=false; }
       }}]:[{label:'60 Sekunden gehalten',variant:'button-primary',keepOpen:true,onClick:async()=>{
         await completeTask(state.roomCode,state.uid,'stay',{id:challenge.id}); closeModal(); toast('Versteck gehalten','Belohnung wurde gutgeschrieben.','success');
       }}])
