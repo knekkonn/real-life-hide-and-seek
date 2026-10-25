@@ -1,7 +1,8 @@
 import { evaluateZone, makeLocationSample, validPoint } from './gps.js';
 import { compressRoundPhoto } from './photos.js';
-import { initBackend, getBackendMode, getPlayerUid, createRoom, getRoom, mutateRoom, subscribeRoom, subscribeConnection, workerCommand, fetchRoundPhoto } from './backend.js';
+import { initBackend, getBackendMode, getPlayerUid, getAccountInfo, registerAccount, signInAccount, signOutAccount, sendAccountPasswordReset, getAccountProfile, saveAccountProfile, enableProtectedTestMode, createRoom, getRoom, mutateRoom, subscribeRoom, subscribeConnection, workerCommand, fetchRoundPhoto } from './backend.js';
 import { MAX_PLAYERS, MIN_PLAYERS } from './config.js';
+import { COSMETIC_IDS } from './profile.js';
 import { SKILLS, SKILL_IDS, DEFAULT_SETTINGS, skillTuning } from './skills.js';
 import {
   createRoomData, addPlayerToRoom, updateSettings, startCountdown, advanceExpiredPhase,
@@ -13,7 +14,7 @@ import { clamp, now, formatTime, escapeHTML, randomCode, distanceMeters, Sound, 
 
 const $ = (id) => document.getElementById(id);
 const state = {
-  uid:null, playerName:'', roomCode:null, room:null, unsubscribe:null, connected:true,
+  uid:null, playerName:'', roomCode:null, room:null, profile:null, testModeExpiresAt:0, unsubscribe:null, connected:true,
   ownLocation:null, watchId:null, gpsPending:false, gpsSyncStatus:'idle', lastLocationWrite:0,
   lastAnnouncementId:null, lastSeekerSideAnnouncementId:null, subscriptionStartedAt:0, seenCatchRequest:null,
   revealDismissedPhase:null, lastCountdownSecond:null, currentTab:'mapTab', lastCelebratedRoundId:null, lastTracksRoundId:null,
@@ -32,6 +33,103 @@ function setConnectionBadge() {
   badge.classList.toggle('is-error', !state.connected);
   if (['firebase','worker'].includes(getBackendMode())) span.textContent = state.connected ? (getBackendMode() === 'worker' ? 'BACKEND LIVE' : 'FIREBASE TEST') : 'RECONNECTING';
   else span.textContent = 'FIREBASE NICHT VERBUNDEN';
+}
+
+async function refreshAccountPanel() {
+  const account=getAccountInfo();
+  const linked=Boolean(account&&!account.isAnonymous);
+  $('accountGuestForm')?.classList.toggle('hidden',linked);
+  $('accountProfile')?.classList.toggle('hidden',!linked);
+  if(!linked) {
+    if($('accountStatus')) $('accountStatus').textContent=account?'Gastkonto · Spielstände dieses Geräts sind nicht kontoübergreifend gespeichert.':'Backend nicht verbunden.';
+    return;
+  }
+  try {
+    state.profile=await getAccountProfile();
+    state.audioOn=state.profile.soundEnabled!==false; setSoundEnabled(state.audioOn); $('soundIcon').textContent=state.audioOn?'♫':'♪̸'; $('soundToggle').classList.toggle('is-muted',!state.audioOn);
+    $('accountStatus').textContent=`Konto verbunden: ${account.email||'E-Mail-Konto'}`;
+    $('profileName').value=state.profile.displayName||state.playerName||$('playerName').value||'';
+    $('profileCosmetic').value=COSMETIC_IDS.includes(state.profile.cosmeticId)?state.profile.cosmeticId:'lime';
+    if(!state.roomCode && state.profile.displayName && !$('playerName').value) $('playerName').value=state.profile.displayName;
+  } catch(error) {
+    $('accountStatus').textContent=error.message||'Profil konnte nicht geladen werden.';
+    $('profileName').value=state.playerName||$('playerName').value||'';
+  }
+}
+
+function validAccountForm() {
+  const email=$('accountEmail').value.trim(),password=$('accountPassword').value;
+  if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)||email.length>254) { toast('E-Mail prüfen','Bitte eine gültige E-Mail-Adresse eingeben.','warn'); return null; }
+  if(password.length<8||password.length>128) { toast('Passwort prüfen','Das Passwort muss 8 bis 128 Zeichen lang sein.','warn'); return null; }
+  return {email,password};
+}
+
+async function createAccountFromForm() {
+  const credentials=validAccountForm(); if(!credentials) return;
+  try {
+    const account=await registerAccount(credentials.email,credentials.password); state.uid=account.uid;
+    const displayName=($('profileName').value||$('playerName').value||state.playerName||'NIGHTHAWK').trim();
+    const profile=await saveAccountProfile({displayName,cosmeticId:$('profileCosmetic').value||'lime',soundEnabled:state.audioOn,hapticsEnabled:true});
+    state.profile=profile;
+    await refreshAccountPanel();
+    toast('Konto erstellt','Name und Avatar-Optik werden sicher mit deinem Konto synchronisiert.','success');
+  } catch(error) { toast('Konto konnte nicht erstellt werden',error.message||'Bitte E-Mail und Passwort prüfen.','warn',6000); }
+}
+
+async function loginFromForm() {
+  const credentials=validAccountForm(); if(!credentials) return;
+  if(state.roomCode) { toast('Runde zuerst verlassen','Melde dich an, bevor du einer Runde beitrittst.','warn'); return; }
+  try {
+    const account=await signInAccount(credentials.email,credentials.password); state.uid=account.uid;
+    await refreshAccountPanel();
+    toast('Angemeldet','Dein Profil ist auf diesem Gerät verfügbar.','success');
+  } catch(error) { toast('Anmeldung fehlgeschlagen',error.message||'E-Mail oder Passwort stimmen nicht.','warn',6000); }
+}
+
+async function resetAccountPassword() {
+  const email=$('accountEmail').value.trim();
+  if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { toast('E-Mail fehlt','Gib zuerst die E-Mail deines Kontos ein.','warn'); return; }
+  try { await sendAccountPasswordReset(email); toast('E-Mail versendet','Wenn für diese Adresse ein Konto besteht, ist eine Anleitung zum Zurücksetzen unterwegs.','success',6000); }
+  catch(error) { toast('Zurücksetzen nicht möglich',error.message||'Bitte später erneut versuchen.','warn'); }
+}
+
+async function saveProfileFromForm() {
+  if(getAccountInfo()?.isAnonymous!==false) { toast('Konto erforderlich','Melde dich mit deinem Konto an, um Profilwerte zu speichern.','warn'); return; }
+  const displayName=$('profileName').value.trim().replace(/\s+/g,' '),cosmeticId=$('profileCosmetic').value;
+  if(displayName.length<2||displayName.length>18||! /^[\p{L}\p{N}_ -]+$/u.test(displayName)||!COSMETIC_IDS.includes(cosmeticId)) { toast('Profil prüfen','Name (2–18 erlaubte Zeichen) oder Optik ungültig.','warn'); return; }
+  try {
+    state.profile=await saveAccountProfile({displayName,cosmeticId,soundEnabled:state.audioOn,hapticsEnabled:true});
+    if(state.roomCode) await workerCommand(state.roomCode,'syncProfile',{displayName,cosmeticId});
+    if(!state.roomCode) $('playerName').value=displayName;
+    toast('Profil gespeichert','Dein Codename und Cosmetic sind mit deinem Konto verknüpft.','success');
+    if(state.room) renderGame(state.room);
+  } catch(error) { toast('Profil nicht gespeichert',error.message||'Backend-Verbindung prüfen.','warn'); }
+}
+
+async function signOutFromForm() {
+  if(state.roomCode) { toast('Runde zuerst verlassen','Verlasse zuerst den Raum, damit deine aktive Teilnahme erhalten bleibt.','warn'); return; }
+  try { const account=await signOutAccount(); state.uid=account?.uid||null; state.profile=null; await refreshAccountPanel(); toast('Abgemeldet','Du kannst weiterhin als Gast spielen.','info'); }
+  catch(error) { toast('Abmeldung fehlgeschlagen',error.message||'Bitte erneut versuchen.','warn'); }
+}
+
+async function unlockTestMode() {
+  const account=getAccountInfo();
+  if(!account||account.isAnonymous) { toast('Konto erforderlich','Der Testmodus ist nur für angemeldete Konten freigeschaltet.','warn'); return; }
+  const code=$('testModeCode').value; if(!code) { toast('Code fehlt','Gib den geschützten Test-Zugangscode ein.','warn'); return; }
+  try {
+    await enableProtectedTestMode(code); state.testModeExpiresAt=now()+30*60*1000; $('testModeCode').value='';
+    const diagnostics=[];
+    diagnostics.push(['Konto',true,'Angemeldet']);
+    diagnostics.push(['Worker / D1',getBackendMode()==='worker',getBackendMode()==='worker'?'Konfiguriert':'Worker-Backend fehlt']);
+    diagnostics.push(['Sicherer Kontext',window.isSecureContext,'HTTPS erforderlich für GPS und Service Worker']);
+    diagnostics.push(['GPS',Boolean(navigator.geolocation),navigator.geolocation?'Browser unterstützt GPS':'GPS-API fehlt']);
+    let storage=false; try { const key='hs-test-'+Math.random(); localStorage.setItem(key,'1'); storage=localStorage.getItem(key)==='1'; localStorage.removeItem(key); } catch {}
+    diagnostics.push(['Lokaler Speicher',storage,storage?'verfügbar':'Browser-Speicher blockiert']);
+    const start=performance.now(); try { await getAccountProfile(); diagnostics.push(['Profil-API',true,`Antwort in ${Math.round(performance.now()-start)} ms`]); } catch(error) { diagnostics.push(['Profil-API',false,error.message]); }
+    $('testDiagnostics').innerHTML=diagnostics.map(([label,ok,detail])=>`<p data-ok="${ok}"><strong>${escapeHTML(label)}:</strong> ${escapeHTML(detail)}</p>`).join('')+`<p>Testmodus für 30 Minuten freigeschaltet.</p>`;
+    $('testDiagnostics').classList.remove('hidden');
+    toast('Testmodus aktiv','Diagnose läuft; es werden keine Testspieler in Live-Räume eingefügt.','success');
+  } catch(error) { toast('Testmodus gesperrt',error.message||'Zugangscode prüfen.','warn'); }
 }
 
 function toast(title, message='', type='info', duration=3800) {
@@ -88,11 +186,13 @@ function currentRole() { return getSelf()?.role || 'waiting'; }
 function isHost() { return state.room?.hostId === state.uid; }
 function canUseGame() { return ['hide','playing'].includes(state.room?.phase) && Boolean(getSelf()?.active); }
 function displayName(player) { return escapeHTML(player?.name || 'UNKNOWN'); }
+function avatarCosmetic(player) { return COSMETIC_IDS.includes(player?.cosmeticId)?` cosmetic-${player.cosmeticId}`:''; }
 
 async function startApp() {
   try { await initBackend(); }
   catch (error) { console.warn(error); toast('Firebase nicht verbunden', error.message + ' Erstellen oder Beitreten versucht die Verbindung erneut.', 'danger', 8000); }
   setConnectionBadge();
+  await refreshAccountPanel();
   $('soundToggle').addEventListener('click', () => {
     state.audioOn = !state.audioOn;
     setSoundEnabled(state.audioOn);
@@ -101,8 +201,14 @@ async function startApp() {
     if (state.audioOn) Sound.click();
     toast('Audio', state.audioOn ? 'Soundeffekte aktiviert.' : 'Soundeffekte deaktiviert.', 'info', 1800);
   });
-  setSoundEnabled(true);
+  setSoundEnabled(state.audioOn);
   $('entryForm').addEventListener('submit', (event) => event.preventDefault());
+  $('accountCreateBtn').addEventListener('click', createAccountFromForm);
+  $('accountLoginBtn').addEventListener('click', loginFromForm);
+  $('accountResetBtn').addEventListener('click', resetAccountPassword);
+  $('profileSaveBtn').addEventListener('click', saveProfileFromForm);
+  $('accountSignOutBtn').addEventListener('click', signOutFromForm);
+  $('testModeBtn').addEventListener('click', unlockTestMode);
   $('createRoomBtn').addEventListener('click', createLobby);
   $('joinRoomBtn').addEventListener('click', joinLobby);
   $('roomCode').addEventListener('input', (event) => { event.target.value = event.target.value.replace(/\D/g,'').slice(0,4); });
@@ -229,7 +335,7 @@ async function restoreSession() {
 }
 
 function validatePlayerName() {
-  const name = $('playerName').value.trim().replace(/\s+/g, ' ');
+  const name = ($('playerName').value.trim() || state.profile?.displayName || '').replace(/\s+/g, ' ');
   if (name.length < 2 || name.length > 18) { toast('Codename prüfen', 'Bitte nutze 2 bis 18 Zeichen.', 'warn'); return null; }
   if (!/^[\p{L}\p{N}_ -]+$/u.test(name)) { toast('Codename ungültig', 'Erlaubt sind Buchstaben, Ziffern, Leerzeichen, Unterstriche und Bindestriche.', 'warn'); return null; }
   return name;
@@ -409,7 +515,7 @@ function renderLobby() {
   document.querySelectorAll('input[name="mode"]').forEach((input) => { input.checked = input.value === settings.mode; });
   document.querySelectorAll('[data-skill]').forEach((input) => { input.checked = settings.skills?.[input.dataset.skill] !== false; });
   $('lobbyPlayers').innerHTML = active.map((player) => `
-    <div class="lobby-player"><div class="player-avatar">${escapeHTML((player.name || '?').slice(0,1).toUpperCase())}</div><div class="player-meta"><strong>${displayName(player)}${player.id === state.uid ? ' <span style="color:var(--cyan)">(DU)</span>' : ''}</strong><small>${player.isHost ? 'LOBBY HOST' : 'OPERATIVE'} · TEILNEHMER</small></div>${player.isHost ? '<span class="player-tag">★ HOST</span>' : '<span class="player-tag">READY</span>'}</div>
+    <div class="lobby-player"><div class="player-avatar${avatarCosmetic(player)}">${escapeHTML((player.name || '?').slice(0,1).toUpperCase())}</div><div class="player-meta"><strong>${displayName(player)}${player.id === state.uid ? ' <span style="color:var(--cyan)">(DU)</span>' : ''}</strong><small>${player.isHost ? 'LOBBY HOST' : 'OPERATIVE'} · TEILNEHMER</small></div>${player.isHost ? '<span class="player-tag">★ HOST</span>' : '<span class="player-tag">READY</span>'}</div>
   `).join('');
   $('startGameBtn').classList.toggle('hidden', !isHost());
   const invalidRoles = Number(settings.seekerCount || 1) >= active.length;
@@ -490,6 +596,7 @@ function renderGame() {
   $('gameSubheading').textContent = phase === 'countdown' ? 'Synchronisiere dich mit deinem Team.' : phase === 'reveal' ? 'Deine Identität wird bestätigt.' : phase === 'hide' ? (role === 'seeker' ? 'Hold position. Die Hider haben Vorsprung.' : 'Finde einen sicheren, öffentlichen Ort zum Verstecken.') : phase === 'playing' ? 'Der Einsatz läuft. Nutze Skills und Signal Caches.' : 'Diese Runde ist beendet.';
   $('operativeName').textContent = self.name;
   $('operativeAvatar').textContent = (self.name || '?').slice(0,1).toUpperCase();
+  $('operativeAvatar').className=`operative-avatar${avatarCosmetic(self||state.profile)}`;
   $('operativeRole').textContent = role === 'seeker' ? (room.settings.mode === 'infected' && self.status === 'infected' ? 'INFIZIERT / SEEKER' : 'SEEKER') : role === 'hider' ? 'HIDER' : role === 'spectator' ? 'ZUSCHAUER' : 'BEREIT';
   $('operativeRole').className = `role-chip ${role === 'seeker' ? 'role-seeker' : role === 'spectator' ? 'role-spectator' : 'role-hider'}`;
   $('roleChip').textContent = $('operativeRole').textContent;
@@ -577,7 +684,7 @@ function renderRoster() {
   $('sideRoster').innerHTML = players.map((player) => {
     const roleText = player.role === 'seeker' ? (player.status === 'infected' ? 'INFIZIERT' : 'SEEKER') : player.role === 'hider' ? 'HIDER' : player.role === 'spectator' ? 'GEFANGEN' : player.active ? 'LOBBY' : 'ABGEMELDET';
     const statusClass = player.role === 'hider' ? 'alive' : player.role === 'seeker' ? 'infected' : '';
-    return `<div class="roster-player"><div class="player-avatar">${escapeHTML((player.name||'?').slice(0,1).toUpperCase())}</div><div class="player-meta"><strong>${displayName(player)}${player.id === state.uid ? ' · DU' : ''}</strong><small>${player.isHost ? 'HOST · ' : ''}${player.status === 'left' ? 'OFFLINE' : player.active ? 'ONLINE' : 'INAKTIV'}</small></div><span class="roster-state ${statusClass}">${roleText}</span></div>`;
+    return `<div class="roster-player"><div class="player-avatar${avatarCosmetic(player)}">${escapeHTML((player.name||'?').slice(0,1).toUpperCase())}</div><div class="player-meta"><strong>${displayName(player)}${player.id === state.uid ? ' · DU' : ''}</strong><small>${player.isHost ? 'HOST · ' : ''}${player.status === 'left' ? 'OFFLINE' : player.active ? 'ONLINE' : 'INAKTIV'}</small></div><span class="roster-state ${statusClass}">${roleText}</span></div>`;
   }).join('');
 }
 
@@ -659,7 +766,7 @@ function renderLeaderboard() {
   $('leaderboard').innerHTML = players.map((player,index) => {
     const role = player.role === 'seeker' ? (player.status === 'infected' ? 'INFIZIERT' : 'SEEKER') : player.role === 'hider' ? 'AKTIV / HIDER' : player.role === 'spectator' ? 'GEFANGEN' : player.status || 'LOBBY';
     const pct = clamp((Number(player.coins)||0) / 100 * 100, 0,100);
-    return `<div class="lobby-player"><span class="rank-number">${String(index+1).padStart(2,'0')}</span><div class="player-avatar">${escapeHTML((player.name||'?').slice(0,1).toUpperCase())}</div><div class="player-meta"><strong>${displayName(player)}${player.id === state.uid ? ' · DU' : ''}</strong><small>${role} · ${player.score||0} PUNKTE · ${player.hidersFound||0} FÄNGE · ${player.skillsUsed||0} SKILLS</small><div class="rank-bar"><span style="width:${pct}%"></span></div></div><span class="player-tag">${player.coins || 0} ◈</span></div>`;
+    return `<div class="lobby-player"><span class="rank-number">${String(index+1).padStart(2,'0')}</span><div class="player-avatar${avatarCosmetic(player)}">${escapeHTML((player.name||'?').slice(0,1).toUpperCase())}</div><div class="player-meta"><strong>${displayName(player)}${player.id === state.uid ? ' · DU' : ''}</strong><small>${role} · ${player.score||0} PUNKTE · ${player.hidersFound||0} FÄNGE · ${player.skillsUsed||0} SKILLS</small><div class="rank-bar"><span style="width:${pct}%"></span></div></div><span class="player-tag">${player.coins || 0} ◈</span></div>`;
   }).join('');
 }
 
@@ -820,7 +927,7 @@ function handleEffects(room) {
 function openCatchPicker() {
   const candidates = activePlayers().filter((player) => player.role === 'hider' && player.id !== state.uid);
   if (!candidates.length) { toast('Keine Hider verfügbar', 'Alle Hider wurden bereits gefangen oder sind nicht aktiv.', 'warn'); return; }
-  openModal({ kicker:'TARGET ACQUISITION', title:'Hider gefangen melden', body:`<p class="modal-copy">Wähle den Hider, den du gerade tatsächlich berührt hast. Beide Geräte brauchen eine höchstens 15 Sekunden alte GPS-Messung mit maximal 60 m Ungenauigkeit. Der erlaubte Abstand richtet sich nach der GPS-Genauigkeit (8–30 m). Der Fang wird sofort registriert; der Hider muss nichts bestätigen.</p><div class="modal-option-list">${candidates.map((player) => `<button type="button" class="modal-option" data-catch-target="${escapeHTML(player.id)}"><span class="player-avatar">${escapeHTML(player.name.slice(0,1).toUpperCase())}</span><span><strong>${displayName(player)}</strong><small>Ausgewählte Begegnung</small></span></button>`).join('')}</div><div class="safety-copy">GPS allein beweist keinen Fang. Nur bei tatsächlicher Berührung melden und in öffentlichen, sicheren Bereichen spielen.</div>`, actions:[{label:'Abbrechen',variant:'button-secondary'}] });
+  openModal({ kicker:'TARGET ACQUISITION', title:'Hider gefangen melden', body:`<p class="modal-copy">Wähle den Hider, den du gerade tatsächlich berührt hast. Beide Geräte brauchen eine höchstens 15 Sekunden alte GPS-Messung mit maximal 60 m Ungenauigkeit. Der Fang zählt nur bei höchstens 8 m GPS-Abstand. Der Fang wird sofort registriert; der Hider muss nichts bestätigen.</p><div class="modal-option-list">${candidates.map((player) => `<button type="button" class="modal-option" data-catch-target="${escapeHTML(player.id)}"><span class="player-avatar${avatarCosmetic(player)}">${escapeHTML(player.name.slice(0,1).toUpperCase())}</span><span><strong>${displayName(player)}</strong><small>Ausgewählte Begegnung</small></span></button>`).join('')}</div><div class="safety-copy">GPS allein beweist keinen Fang. Nur bei tatsächlicher Berührung melden und in öffentlichen, sicheren Bereichen spielen.</div>`, actions:[{label:'Abbrechen',variant:'button-secondary'}] });
   $('modalBody').querySelectorAll('[data-catch-target]').forEach((button) => button.addEventListener('click', async () => {
     const targetId = button.dataset.catchTarget;
     closeModal();
@@ -902,21 +1009,21 @@ async function startTask(kind) {
     if(kind==='visit') {
       selectTab('mapTab');
       if(challenge.targetLocation) centerMap(challenge.targetLocation);
-      toast('Zielpunkt markiert','Gehe zum leuchtenden Zielmarker. Die Aufgabe wird automatisch abgeschlossen, sobald dein aktuelles GPS dich innerhalb von 20 m erkennt.','info',6500);
+      toast('Zielpunkt markiert','Gehe zum leuchtenden Zielmarker. Die Aufgabe wird automatisch abgeschlossen, sobald dein aktuelles GPS dich innerhalb von 10 m erkennt.','info',6500);
       return;
     }
     const escapedPrompt=escapeHTML(challenge.prompt || 'Finde den Zielpunkt auf der Karte.');
     const body=kind==='cipher'
       ? `<p class="modal-copy">${escapedPrompt}</p><label class="modal-field-label" for="taskAnswer">3-stelliger Tresorcode</label><input id="taskAnswer" class="modal-input" type="text" inputmode="numeric" pattern="[0-9]{3}" autocomplete="off" maxlength="3" minlength="3" autocapitalize="off" spellcheck="false" placeholder="000" aria-label="3-stelliger Tresorcode"><p>Der Code nutzt drei verschiedene Ziffern. Eine falsche Antwort beendet den Versuch und startet den Cooldown.</p>`
       : kind==='scan'
-      ? `<p class="modal-copy">Gehe zu dem sicheren, öffentlichen Signal Cache, den der Server für dich ausgewählt hat. Er wird auf deiner Karte markiert. Nähe unter 20 m erforderlich.</p><p id="scanTaskStatus">Cache-Scan läuft · 120 Sekunden</p>`
+      ? `<p class="modal-copy">Gehe zu dem sicheren, öffentlichen Signal Cache, den der Server für dich ausgewählt hat. Er wird auf deiner Karte markiert. Nähe innerhalb von 10 m erforderlich.</p><p id="scanTaskStatus">Cache-Scan läuft · 120 Sekunden</p>`
       : kind==='proximity'
-      ? `<p class="modal-copy">Suche selbstständig nach einem aktiven Hider. Der Server bestätigt die Aufgabe, wenn du auf 35 m herankommst; du bekommst keine fremde GPS-Position angezeigt.</p><p>Verbleibende Zeit: 120 Sekunden</p>`
+      ? `<p class="modal-copy">Suche selbstständig nach einem aktiven Hider. Der Server bestätigt die Aufgabe, wenn du auf 10 m herankommst; du bekommst keine fremde GPS-Position angezeigt.</p><p>Verbleibende Zeit: 120 Sekunden</p>`
       : kind==='visit'
       ? `<p class="modal-copy">Gehe zum geheimen Punkt in der Zone. Das Ziel erscheint auf deiner Karte. Bleib in einem sicheren, öffentlichen Bereich.</p><p id="visitTaskStatus">Zielsuche läuft · 120 Sekunden</p>`
       : kind==='photo'
       ? `<p class="modal-copy">Fotografiere dein Versteck, ohne andere Personen aufzunehmen. Das Bild wird im Browser verkleinert und ohne EXIF-Daten an die Runde übertragen. Es ist für das Suchteam sichtbar und wird beim Rundenende gelöscht.</p><label class="modal-field-label" for="taskPhoto">Kamera oder Bild auswählen</label><input id="taskPhoto" class="modal-input" type="file" accept="image/jpeg,image/png,image/webp" capture="environment"><p>Nur ein kleines JPEG wird übertragen. Das Bild bleibt auf die laufende Runde beschränkt.</p>`
-      : `<p class="modal-copy">Halte deinen Standort 60 Sekunden lang innerhalb von 15 m. GPS-Lücken über 10 Sekunden, zu ungenaue Messungen oder Bewegung beenden den Versuch.</p><p id="stayTaskStatus">Verbleibende Zeit: 60 s</p>`;
+      : `<p class="modal-copy">Halte deinen Standort 60 Sekunden lang innerhalb von 10 m. GPS-Lücken über 10 Sekunden, zu ungenaue Messungen oder Bewegung beenden den Versuch.</p><p id="stayTaskStatus">Verbleibende Zeit: 60 s</p>`;
     const titles={cipher:'Tresorcode knacken',visit:'Geheimer Zielpunkt',photo:'Versteck fotografieren',stay:'Versteck halten',scan:'Signal Cache scannen',proximity:'Hider-Signal aufspüren'};
     openModal({kicker:'FIELD CHALLENGE',title:titles[kind]||'Feldaufgabe',body,closeable:['scan','proximity'].includes(kind),actions:[
       {label:'Abbrechen',variant:'button-secondary',onClick:async()=>{ await workerCommand(state.roomCode,'failTask',{taskId:challenge.id}); clearInterval(state.taskProgressTimer); }},

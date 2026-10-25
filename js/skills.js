@@ -26,7 +26,7 @@ export function eligibleSkills(settings, side) {
 export function skillTuning(skillId, radius=500) {
   const skill = SKILLS[skillId];
   if (!skill) return null;
-  const zone = Math.max(100, Math.min(2000, Number(radius) || 500));
+  const zone = Math.max(50, Math.min(2000, Number(radius) || 500));
   const zoneScale = Math.sqrt(zone / 500);
   const price = Math.max(10, Math.round((skill.price * (0.8 + skill.strength * 0.2) * (0.82 + zoneScale * 0.18)) / 5) * 5);
   const duration = skill.duration ? Math.max(5, Math.round(skill.duration * (0.82 + zoneScale * 0.18))) : 0;

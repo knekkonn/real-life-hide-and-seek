@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import worker from '../worker/index.js';
 import { applyAction, publicRoom, settlePhases } from '../worker/game.js';
 import { authenticate } from '../worker/auth.js';
-import { createRoomData, addPlayerToRoom } from '../js/game-service.js';
+import { createRoomData, addPlayerToRoom, updateSettings } from '../js/game-service.js';
 import { findSafeItemLocations } from '../worker/itembox.js';
 import { skillTuning } from '../js/skills.js';
 
@@ -116,7 +116,7 @@ test('skill prices and active ranges follow strength and playzone scale', () => 
   assert.ok(wide.sweepRadius>compact.sweepRadius);
   assert.ok(skillTuning('shield',1000).price>skillTuning('sprint',1000).price,'stronger effects cost more');
 });
-test('catch accepts fresh GPS fixes within the accuracy-adjusted range', async () => {
+test('catch enforces a hard maximum distance of eight meters', async () => {
   const room=playing();
   room.players.guest.location={lat:.0002,lng:0,accuracy:5,measuredAt:Date.now()};room.players.guest.locationAt=Date.now();
   await assert.rejects(applyAction(room,'host',{action:'requestCatch',targetId:'guest'}),/CATCH_RANGE_REQUIRED/);
@@ -124,11 +124,13 @@ test('catch accepts fresh GPS fixes within the accuracy-adjusted range', async (
   const close=playing();close.settings.mode='infected';close.players.guest.location={lat:.00004,lng:0,accuracy:5,measuredAt:Date.now()};close.players.guest.locationAt=Date.now();
   await applyAction(close,'host',{action:'requestCatch',targetId:'guest'});
   assert.equal(close.players.guest.role,'seeker','a GPS distance within the accuracy-adjusted range is accepted');
-  const laptop=playing();laptop.settings.mode='infected';laptop.players.host.location={lat:0,lng:0,accuracy:45,measuredAt:Date.now()};laptop.players.host.locationAt=Date.now();laptop.players.guest.location={lat:.0002,lng:0,accuracy:50,measuredAt:Date.now()};laptop.players.guest.locationAt=Date.now();
+  const laptop=playing();laptop.settings.mode='infected';laptop.players.host.location={lat:0,lng:0,accuracy:45,measuredAt:Date.now()};laptop.players.host.locationAt=Date.now();laptop.players.guest.location={lat:.00006,lng:0,accuracy:50,measuredAt:Date.now()};laptop.players.guest.locationAt=Date.now();
   await applyAction(laptop,'host',{action:'requestCatch',targetId:'guest'});
   assert.equal(laptop.players.guest.role,'seeker','moderate laptop GPS drift is supported when the players are close');
   const outside=playing();outside.players.guest.location={lat:.0004,lng:0,accuracy:5,measuredAt:Date.now()};outside.players.guest.locationAt=Date.now();
   await assert.rejects(applyAction(outside,'host',{action:'requestCatch',targetId:'guest'}),/CATCH_RANGE_REQUIRED/);
+  const justOutside=playing();justOutside.players.guest.location={lat:.00008,lng:0,accuracy:5,measuredAt:Date.now()};justOutside.players.guest.locationAt=Date.now();
+  await assert.rejects(applyAction(justOutside,'host',{action:'requestCatch',targetId:'guest'}),/CATCH_RANGE_REQUIRED/,'the catch limit stays below 9 m even when GPS accuracy is poor');
   room.players.guest.location={lat:0,lng:0,accuracy:70,measuredAt:Date.now()};room.players.guest.locationAt=Date.now();
   await assert.rejects(applyAction(room,'host',{action:'requestCatch',targetId:'guest'}),/FRESH_GPS_REQUIRED/);
 });
@@ -197,9 +199,27 @@ test('server-issued casual logic code is unique, private, rate-limited and redee
   await assert.rejects(applyAction(successRoom,'guest',{action:'completeTask',proof:{id:started.result.id,answer}},timestamp+32000),/INVALID_CHALLENGE/);
 });
 
+test('all GPS task thresholds stay at or below ten meters', async () => {
+  const room=playing(),timestamp=Date.now();
+  room.objectives={one:{id:'one',location:{lat:.001,lng:0}}};
+  const visit=await applyAction(room,'guest',{action:'beginTask',kind:'visit'},timestamp);
+  assert.equal(room.players.guest.activeTask.radius,10);
+  const hold=await applyAction(room,'other',{action:'beginTask',kind:'stay'},timestamp);
+  assert.equal(room.players.other.activeTask.duration,60000);
+  const moved=await applyAction(room,'other',{action:'updatePlayerLocation',location:{lat:.0001,lng:0,accuracy:5,measuredAt:timestamp+1000}},timestamp+1000);
+  assert.equal(room.players.other.activeTask.failed,true,'moving more than 10 m fails the hold task');
+  assert.ok(visit.result.id&&hold.result.id&&moved.result);
+  const compact=createRoomData('host','HOST');
+  updateSettings(compact,'host',{radius:25});
+  assert.equal(compact.settings.radius,50,'the smallest supported zone is 50 m');
+  updateSettings(compact,'host',{radius:500});
+  updateSettings(compact,'host',{radius:50});
+  assert.equal(skillTuning('decoy',50).zoneRadius,50);
+});
+
 test('seeker tasks are role-specific and server-check cache or hider proximity', async () => {
   const room=playing(),timestamp=Date.now();
-  room.itemBoxes={box1:{id:'box1',location:{lat:.0001,lng:0},collected:false},box2:{id:'box2',location:{lat:.0002,lng:0},collected:false}};
+  room.itemBoxes={box1:{id:'box1',location:{lat:0,lng:0},collected:false},box2:{id:'box2',location:{lat:.00002,lng:0},collected:false}};
   await assert.rejects(applyAction(room,'guest',{action:'beginTask',kind:'scan'},timestamp),/TASK_UNAVAILABLE/);
   const scan=await applyAction(room,'host',{action:'beginTask',kind:'scan'},timestamp);
   assert.match(scan.result.prompt,/Signal Cache scannen/);
@@ -217,7 +237,9 @@ test('seeker tasks are role-specific and server-check cache or hider proximity',
   // test timeline with the timestamps passed to applyAction.
   room.players.host.locationAt=room.players.guest.locationAt=timestamp+40000;
   const search=await applyAction(room,'host',{action:'beginTask',kind:'proximity'},timestamp+40000);
-  assert.match(search.result.prompt,/35 m/);
+  assert.match(search.result.prompt,/10 m/);
+  await applyAction(room,'guest',{action:'updatePlayerLocation',location:{lat:0,lng:0,accuracy:5,measuredAt:timestamp+41000}},timestamp+41000);
+  room.players.guest.locationAt=timestamp+41000;
   await applyAction(room,'host',{action:'updatePlayerLocation',location:{lat:0,lng:0,accuracy:5,measuredAt:timestamp+41000}},timestamp+41000);
   room.players.host.locationAt=timestamp+41000;
   const found=await applyAction(room,'host',{action:'completeTask',proof:{id:search.result.id}},timestamp+42000);
@@ -337,12 +359,38 @@ test('Firebase token verification rejects missing credentials and Google denial'
 function d1() {
   const sqlite=new DatabaseSync(':memory:');
   sqlite.exec(readFileSync(new URL('../worker/migrations/0001.sql',import.meta.url),'utf8'));
+  sqlite.exec(readFileSync(new URL('../worker/migrations/0002_profiles.sql',import.meta.url),'utf8'));
   const prepare=(sql)=>({bind(...args) {const statement=sqlite.prepare(sql);return {
     async first() {return statement.get(...args) || null;},
     async run() {return {meta:{changes:Number(statement.run(...args).changes)}};}
   };}});
   return {prepare};
 }
+test('persistent accounts store only validated profile preferences and protect test mode', async () => {
+  const originalFetch=globalThis.fetch;
+  globalThis.fetch=async(url,options)=>{const id=JSON.parse(options.body).idToken;return new Response(JSON.stringify({users:[{localId:id,providerUserInfo:id==='anon-account-test'?[]:[{providerId:'password'}]}]}),{status:200});};
+  try {
+    const env={DB:d1(),ALLOWED_ORIGIN:'https://knekkonn.github.io',TEST_MODE_CODE:'test-code-123'};
+    const request=(uid,path,body)=>new Request(`https://api.test${path}`,{method:body?'POST':'GET',headers:{Authorization:`Bearer ${uid}`,Origin:env.ALLOWED_ORIGIN,...(body?{'Content-Type':'application/json'}:{})},...(body?{body:JSON.stringify(body)}:{})});
+    const saved=await worker.fetch(request('account-profile-test','/profile',{displayName:'Night Fox',cosmeticId:'violet',soundEnabled:false,hapticsEnabled:true}),env);
+    assert.equal(saved.status,200);
+    const stored=await (await worker.fetch(request('account-profile-test','/profile'),env)).json();
+    assert.deepEqual(stored.profile,{displayName:'Night Fox',cosmeticId:'violet',soundEnabled:false,hapticsEnabled:true});
+    assert.equal((await env.DB.prepare('SELECT COUNT(*) AS count FROM account_profiles').bind().first()).count,1,'email and password are not stored in D1');
+    assert.equal((await worker.fetch(request('account-profile-test','/profile',{displayName:'a','cosmeticId':'not-a-cosmetic'}),env)).status,400);
+    assert.equal((await worker.fetch(request('anon-account-test','/profile'),env)).status,401,'anonymous users cannot persist profiles');
+    assert.equal((await worker.fetch(request('account-profile-test','/test-mode',{code:'wrong'}),env)).status,403);
+    assert.equal((await worker.fetch(request('account-profile-test','/test-mode',{code:'test-code-123'}),env)).status,200);
+  } finally {globalThis.fetch=originalFetch;}
+});
+test('player cosmetics can only be synchronized by the owning room member', async () => {
+  const room=playing(); room.phase='lobby'; const timestamp=Date.now();
+  await applyAction(room,'guest',{action:'syncProfile',displayName:'Runner Fox',cosmeticId:'rose'},timestamp);
+  assert.equal(room.players.guest.name,'Runner Fox');
+  assert.equal(room.players.guest.cosmeticId,'rose');
+  await assert.rejects(applyAction(room,'guest',{action:'syncProfile',displayName:'Runner Fox',cosmeticId:'admin'},timestamp),/PROFILE_INVALID/);
+  await assert.rejects(applyAction(room,'outsider',{action:'syncProfile',displayName:'Other',cosmeticId:'lime'},timestamp),/NOT_MEMBER/);
+});
 test('HTTP/D1 integration joins players directly and blocks outsider reads', async () => {
   const originalFetch=globalThis.fetch;
   globalThis.fetch=async(url,options)=>new Response(JSON.stringify({users:[{localId:JSON.parse(options.body).idToken}]}),{status:200});
