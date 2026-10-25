@@ -95,7 +95,10 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
   if (action === 'settings') { host(room,uid); return {room:game.updateSettings(room,uid,input.patch || {}),result:true}; }
   if (action === 'start') {
     host(room,uid);
-    if (!validPoint(room.settings.center)) throw new Error('CENTER_REQUIRED');
+    if (!validPoint(room.settings.center)) {
+      if (!freshAccurate(player,timestamp)) throw new Error('FRESH_GPS_REQUIRED');
+      room.settings.center={lat:player.location.lat,lng:player.location.lng};
+    }
     const result = game.startCountdown(room,uid,null);
     room.objectives=Object.fromEntries(Array.from({length:5},(_,i)=>[String(i),{id:String(i),location:gameRandomPoint(room.settings.center,room.settings.radius)}]));
     if (!result.ok) throw new Error(result.reason);
