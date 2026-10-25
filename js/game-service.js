@@ -1,7 +1,7 @@
 import { validPoint } from './gps.js';
 import { mutateRoom, remoteAction } from './store.js';
 import { DEFAULT_SETTINGS, SKILLS, eligibleSkills, SKILL_IDS } from './skills.js';
-import { now, randomId, randomFrom, randomPointInRadius, distanceMeters, clamp } from './utils.js';
+import { now, randomId, randomFrom, distanceMeters, clamp } from './utils.js';
 
 export function createRoomData(hostId, hostName) {
   const timestamp = now();
@@ -129,16 +129,7 @@ export async function advanceExpiredPhase(code, room) {
       current.matchEndsAt = timestamp + (Number(current.settings.gameDuration) || 1200) * 1000;
       current.phaseEndsAt = current.matchEndsAt;
       current.lastPhaseTransitionAt = timestamp;
-      const center = current.settings.center || Object.values(current.players || {}).find((p) => p.location)?.location || null;
-      if (center) {
-        current.settings.center = { lat:center.lat, lng:center.lng };
-        current.itemBoxes ||= {};
-        for (let i=0;i<5;i++) {
-          const point = randomPointInRadius(center, current.settings.radius || 500);
-          const id = randomId('cache');
-          current.itemBoxes[id] = { id, location:point, createdAt:timestamp, collected:false, type:Math.random() < .72 ? 'credits' : 'skill' };
-        }
-      }
+      current.itemBoxes = {};
       for (const player of Object.values(current.players || {})) player.rewardAt = timestamp;
       current.announcement = { id:randomId('announcement'), type:'system', title:'SEEK PHASE LIVE', message:'Die Jagd ist freigegeben. Signal Caches wurden aktiviert.', createdAt:timestamp };
     } else if (current.phase === 'playing') {
@@ -174,16 +165,10 @@ export async function updatePlayerLocation(code, uid, location) {
     const player = room.players?.[uid];
     if (!player || !player.active) return null;
     if (!validPoint(location) || !Number.isFinite(location.accuracy) || location.accuracy <= 0 || !Number.isFinite(location.measuredAt) || now() - location.measuredAt > 10000 || location.measuredAt > now() + 2000) return null;
-    player.location = { lat:location.lat, lng:location.lng, accuracy:location.accuracy, measuredAt:location.measuredAt };
+    player.location = { lat:location.lat, lng:location.lng, accuracy:location.accuracy, measuredAt:location.measuredAt, ...(Number.isFinite(location.altitude) && location.altitude >= -500 && location.altitude <= 10000 ? {altitude:location.altitude} : {}) };
     player.locationAt = now();
     if (!room.settings.center && room.hostId === uid && location.accuracy <= 50) {
       room.settings.center = { lat:player.location.lat, lng:player.location.lng };
-      if (room.phase === 'playing' && Object.keys(room.itemBoxes || {}).length === 0) {
-        for (let i=0;i<5;i++) {
-          const id = randomId('cache');
-          room.itemBoxes[id] = { id, location:randomPointInRadius(room.settings.center, room.settings.radius || 500), createdAt:now(), collected:false, type:Math.random() < .72 ? 'credits' : 'skill' };
-        }
-      }
     }
     // Traps are resolved transactionally so a seeker's device cannot trigger the same trap twice.
     if (room.phase === 'playing' && player.role === 'seeker' && (player.effects?.frozenUntil || 0) < now()) {
@@ -211,7 +196,7 @@ export async function requestCatch(code, seekerId, targetId) {
     if (room.phase !== 'playing' || !seeker || seeker.role !== 'seeker' || !seeker.active) return null;
     if (!target || target.role !== 'hider' || !target.active) return null;
     const timestamp=now();
-    if(!freshCatchLocation(seeker,timestamp) || !freshCatchLocation(target,timestamp) || distanceMeters(seeker.location,target.location)>30) return null;
+    if(!freshCatchLocation(seeker,timestamp) || !freshCatchLocation(target,timestamp) || distanceMeters(seeker.location,target.location)>5) return null;
     if(!applyCatch(room,seekerId,targetId,timestamp)) return null;
     return room;
   });
@@ -398,13 +383,8 @@ export async function collectItemBox(code, uid, boxId) {
       player.inventory ||= [];
       player.inventory.push(bonus);
     }
-    // Replace the cache so the field stays populated without growing the room tree forever.
+    // The Worker places caches only after checking public OSM foot-access data.
     delete room.itemBoxes[boxId];
-    const center = room.settings.center || player.location;
-    if (center) {
-      const nextId = randomId('cache');
-      room.itemBoxes[nextId] = { id:nextId, location:randomPointInRadius(center, room.settings.radius || 500), createdAt:now(), collected:false, type:Math.random() < .72 ? 'credits' : 'skill' };
-    }
     room.announcement = { id:randomId('announcement'), type:'private', targetId:uid, title:'SIGNAL CACHE SECURED', message:bonus ? `+10 Credits und ${SKILLS[bonus].short} gefunden!` : '+10 Credits eingesammelt.', createdAt:now() };
     return room;
   });
