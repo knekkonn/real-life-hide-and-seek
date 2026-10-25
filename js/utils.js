@@ -55,17 +55,7 @@ let soundEnabled = true;
 let audioContext = null;
 let tensionTimer = null;
 let tensionStep = 0;
-let musicEnabled = false;
-let musicTimer = null;
-let musicMaster = null;
-let musicStep = 0;
 
-const AMBIENT_CHORDS = [
-  [146.83, 220, 293.66, 349.23],
-  [174.61, 220, 261.63, 349.23],
-  [130.81, 196, 261.63, 329.63],
-  [146.83, 196, 246.94, 293.66]
-];
 
 function getAudioContext() {
   const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
@@ -84,94 +74,6 @@ export function isSoundEnabled() { return soundEnabled; }
 function clearTension() {
   if (tensionTimer) window.clearInterval(tensionTimer);
   tensionTimer = null;
-}
-
-function playAmbientChord(ctx, master, chord) {
-  const start = ctx.currentTime + 0.03;
-  chord.forEach((frequency, index) => {
-    const oscillator = ctx.createOscillator();
-    const filter = ctx.createBiquadFilter();
-    const envelope = ctx.createGain();
-    oscillator.type = index === 0 ? 'triangle' : 'sine';
-    oscillator.frequency.setValueAtTime(frequency, start);
-    filter.type = 'lowpass';
-    filter.frequency.setValueAtTime(index === 0 ? 520 : 1050, start);
-    envelope.gain.setValueAtTime(0.0001, start);
-    envelope.gain.linearRampToValueAtTime(index === 0 ? 0.035 : 0.022, start + 2.8);
-    envelope.gain.setValueAtTime(index === 0 ? 0.035 : 0.022, start + 6.6);
-    envelope.gain.exponentialRampToValueAtTime(0.0001, start + 9.2);
-    oscillator.connect(filter);
-    filter.connect(envelope);
-    envelope.connect(master);
-    oscillator.start(start);
-    oscillator.stop(start + 9.3);
-    oscillator.addEventListener('ended', () => {
-      oscillator.disconnect();
-      filter.disconnect();
-      envelope.disconnect();
-    }, { once: true });
-  });
-}
-
-async function startAmbientMusic() {
-  if (!musicEnabled || document.visibilityState === 'hidden') return false;
-  const ctx = getAudioContext();
-  if (!ctx) return false;
-  try { await ctx.resume(); } catch { return false; }
-  if (!musicEnabled || document.visibilityState === 'hidden' || ctx.state !== 'running') return false;
-  if (musicTimer && musicMaster) return true;
-  const master = ctx.createGain();
-  master.gain.setValueAtTime(0.0001, ctx.currentTime);
-  master.gain.linearRampToValueAtTime(0.32, ctx.currentTime + 2.5);
-  master.connect(ctx.destination);
-  musicMaster = master;
-  musicStep = 0;
-  const play = () => {
-    if (!musicEnabled || musicMaster !== master || document.visibilityState === 'hidden') return;
-    playAmbientChord(ctx, master, AMBIENT_CHORDS[musicStep % AMBIENT_CHORDS.length]);
-    musicStep++;
-  };
-  play();
-  musicTimer = window.setInterval(play, 8000);
-  return true;
-}
-
-function stopAmbientMusic() {
-  if (musicTimer) window.clearInterval(musicTimer);
-  musicTimer = null;
-  const master = musicMaster;
-  musicMaster = null;
-  if (!master || !audioContext) return;
-  const ctx = audioContext;
-  const time = ctx.currentTime;
-  master.gain.cancelScheduledValues(time);
-  master.gain.setValueAtTime(Math.max(master.gain.value, 0.0001), time);
-  master.gain.exponentialRampToValueAtTime(0.0001, time + 0.7);
-  window.setTimeout(() => { try { master.disconnect(); } catch {} }, 800);
-}
-
-export async function setMusicEnabled(enabled) {
-  musicEnabled = Boolean(enabled);
-  if (musicEnabled && !await startAmbientMusic()) musicEnabled = false;
-  try { localStorage.setItem('hide-seek-ambient-music', musicEnabled ? 'on' : 'off'); } catch { /* local preferences may be unavailable */ }
-  if (!musicEnabled) stopAmbientMusic();
-  return musicEnabled;
-}
-
-export function getMusicPreference() {
-  try { return localStorage.getItem('hide-seek-ambient-music') === 'on'; }
-  catch { return false; }
-}
-export function isMusicEnabled() { return musicEnabled; }
-
-if (typeof document !== 'undefined') {
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden') stopAmbientMusic();
-    else if (musicEnabled) void startAmbientMusic();
-  });
-  document.addEventListener('pointerdown', () => {
-    if (musicEnabled && !musicMaster) void startAmbientMusic();
-  }, { passive: true });
 }
 
 function tone(frequency, duration=.12, type='sine', volume=.05, delay=0) {
