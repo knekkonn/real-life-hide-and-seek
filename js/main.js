@@ -1,4 +1,5 @@
-import { initBackend, getBackendMode, getPlayerUid, createRoom, getRoom, primeRoomForTransaction, mutateRoom, deleteRoom, subscribeRoom, subscribeConnection } from './backend.js';
+import { evaluateZone } from './gps.js';
+import { initBackend, getBackendMode, getPlayerUid, createRoom, getRoom, mutateRoom, subscribeRoom, subscribeConnection, workerCommand } from './backend.js';
 import { MAX_PLAYERS, MIN_PLAYERS } from './config.js';
 import { SKILLS, SKILL_IDS, DEFAULT_SETTINGS } from './skills.js';
 import {
@@ -6,11 +7,10 @@ import {
   maybePayTimeReward, updatePlayerLocation, requestCatch, respondToCatch, buySkill,
   activateSkill, collectItemBox, completeTask, leaveRoom
 } from './game-service.js';
-import { initMap, updateMap, centerMap, invalidateMapSize, resetMap } from './map.js';
+import { updateLobbyMap, resetLobbyMap, initMap, updateMap, centerMap, invalidateMapSize, resetMap } from './map.js';
 import { clamp, now, formatTime, escapeHTML, randomCode, distanceMeters, Sound, haptic, setSoundEnabled } from './utils.js';
 
 const $ = (id) => document.getElementById(id);
-const ACTIVE_ROOM_SESSION_KEY = 'hideseek-active-room-session';
 const state = {
   uid:null, playerName:'', roomCode:null, room:null, unsubscribe:null, connected:true,
   ownLocation:null, watchId:null, gpsPending:false, lastLocationWrite:0,
@@ -26,10 +26,10 @@ const PHASE_LABELS = { lobby:'LOBBY READY',countdown:'SYNC COUNTDOWN',reveal:'ID
 function setConnectionBadge() {
   const badge = $('connectionBadge');
   const span = badge.querySelector('span');
-  badge.classList.toggle('is-connected', state.connected && getBackendMode() === 'firebase');
+  badge.classList.toggle('is-connected', state.connected && ['firebase','worker'].includes(getBackendMode()));
   badge.classList.toggle('is-error', !state.connected);
-  if (getBackendMode() === 'firebase') span.textContent = state.connected ? 'FIREBASE LIVE' : 'RECONNECTING';
-  else span.textContent = 'DEMO-MODUS';
+  if (['firebase','worker'].includes(getBackendMode())) span.textContent = state.connected ? (getBackendMode() === 'worker' ? 'BACKEND LIVE' : 'FIREBASE TEST') : 'RECONNECTING';
+  else span.textContent = 'FIREBASE NICHT VERBUNDEN';
 }
 
 function toast(title, message='', type='info', duration=3800) {
@@ -80,47 +80,9 @@ function isHost() { return state.room?.hostId === state.uid; }
 function canUseGame() { return ['hide','playing'].includes(state.room?.phase) && Boolean(getSelf()?.active); }
 function displayName(player) { return escapeHTML(player?.name || 'UNKNOWN'); }
 
-function persistActiveRoomSession() {
-  try {
-    if (state.roomCode && state.uid && state.playerName) {
-      sessionStorage.setItem(ACTIVE_ROOM_SESSION_KEY, JSON.stringify({ code:state.roomCode, uid:state.uid, name:state.playerName }));
-    }
-  } catch { /* Session restoration is optional when browser storage is unavailable. */ }
-}
-
-function clearActiveRoomSession() {
-  try { sessionStorage.removeItem(ACTIVE_ROOM_SESSION_KEY); } catch { /* Ignore unavailable browser storage. */ }
-}
-
-async function restoreActiveRoomSession() {
-  let saved;
-  try { saved = JSON.parse(sessionStorage.getItem(ACTIVE_ROOM_SESSION_KEY) || 'null'); }
-  catch { clearActiveRoomSession(); return; }
-  if (!saved || !/^\d{4}$/.test(saved.code || '') || saved.uid !== getPlayerUid()) {
-    clearActiveRoomSession();
-    return;
-  }
-  try {
-    const room = await getRoom(saved.code);
-    if (!room || !room.players?.[saved.uid]?.active || room.phase === 'closed') {
-      clearActiveRoomSession();
-      return;
-    }
-    state.playerName = saved.name || room.players[saved.uid].name || '';
-    state.uid = saved.uid;
-    state.roomCode = saved.code;
-    state.subscriptionStartedAt = now();
-    attachRoomListener();
-    showGameState();
-  } catch (error) {
-    // Keep the session so a transient network failure does not lose the lobby.
-    console.warn('Lobby session could not be restored.', error?.code || 'connection error');
-  }
-}
-
 async function startApp() {
   try { await initBackend(); }
-  catch (error) { console.warn(error); toast('Firebase nicht verbunden', 'Die App läuft im lokalen Demo-Modus. Für echte Multiplayer-Synchronisation Firebase konfigurieren.', 'warn', 6500); }
+  catch (error) { console.warn(error); toast('Firebase nicht verbunden', error.message + ' Erstellen oder Beitreten versucht die Verbindung erneut.', 'danger', 8000); }
   setConnectionBadge();
   $('soundToggle').addEventListener('click', () => {
     state.audioOn = !state.audioOn;
@@ -146,6 +108,7 @@ async function startApp() {
     else if (state.room?.settings?.center) centerMap(state.room.settings.center);
     else requestGPS();
   });
+  $('lobbyGpsBtn').addEventListener('click', requestGPS);
   $('catchBtn').addEventListener('click', openCatchPicker);
   $('activateSkillBtn').addEventListener('click', openSkillPicker);
   $('startTaskBtn').addEventListener('click', startCodeTask);
@@ -155,7 +118,9 @@ async function startApp() {
   $('mapRadius').addEventListener('input', (event) => {
     const radius = Number(event.target.value);
     $('mapRadiusValue').textContent = `${radius} m`;
-    saveSettings({ radius });
+    updateLobbyMap({ ...state.room, settings:{...state.room.settings, radius} }, isHost(), saveCenter);
+    clearTimeout(state.radiusSaveTimer);
+    state.radiusSaveTimer=setTimeout(()=>saveSettings({radius}),300);
   });
   document.querySelectorAll('[data-step]').forEach((button) => button.addEventListener('click', () => {
     const key = button.dataset.step;
@@ -171,13 +136,53 @@ async function startApp() {
   $('announcementsToggle').addEventListener('change', (event) => saveSettings({ announcements:event.target.checked }));
   $('seekerCount').addEventListener('change', (event) => saveSettings({ seekerCount:Number(event.target.value) }));
   document.querySelectorAll('.game-tab').forEach((button) => button.addEventListener('click', () => selectTab(button.dataset.tab)));
-  await restoreActiveRoomSession();
+  window.addEventListener('unhandledrejection', (event) => { event.preventDefault(); toast('Aktion nicht bestätigt', event.reason?.message || 'Bitte Verbindung prüfen und erneut versuchen.', 'danger'); });
+  window.addEventListener('online', async () => { try { await initBackend(); bindConnection(); if (!state.roomCode) await restoreSession(); } catch (error) { toast('Verbindung fehlgeschlagen',error.message,'warn'); } });
+  window.addEventListener('offline', () => { state.connected=false; state.zone=null; setConnectionBadge(); });
   window.addEventListener('keydown', (event) => { if (event.key === 'Escape' && state.modalCloseable && !$('modalRoot').classList.contains('hidden')) closeModal(); });
-  subscribeConnection((connected) => { state.connected = connected; setConnectionBadge(); });
+  bindConnection();
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
-    navigator.serviceWorker.register('./sw.js').catch((error) => console.warn('Service worker registration failed', error));
+    navigator.serviceWorker.register('./sw.js', { updateViaCache:'none' }).catch((error) => console.warn('Service worker registration failed', error));
   }
+  await restoreSession();
   state.tickHandle = window.setInterval(tick, 500);
+}
+
+function bindConnection() {
+  state.unsubscribeConnection?.();
+  state.unsubscribeConnection = subscribeConnection((connected) => {
+    state.connected = connected;
+    if (!connected) state.zone = null;
+    setConnectionBadge();
+  });
+}
+
+const SESSION_KEY = 'hideseek-session-v2';
+function persistSession() {
+  try { localStorage.setItem(SESSION_KEY, JSON.stringify({ uid:state.uid, code:state.roomCode, name:state.playerName })); }
+  catch { toast('Sitzung nicht gespeichert', 'Browserspeicher ist gesperrt. Nach Neuladen erneut beitreten.', 'warn'); }
+}
+async function restoreSession() {
+  let saved;
+  try { saved = JSON.parse(localStorage.getItem(SESSION_KEY)); } catch { return; }
+  if (!saved || !/^\d{4}$/.test(saved.code)) return;
+  if (!['firebase','worker'].includes(getBackendMode())) return; // Keep the record for the next successful reconnect.
+  if (saved.uid !== getPlayerUid()) {
+    toast('Sitzung nicht wiederherstellbar', 'Die gespeicherte Firebase-Identität ist nicht mehr verfügbar. Bitte erneut beitreten.', 'warn');
+    return;
+  }
+  try {
+    const room = await getRoom(saved.code);
+    if (!room || ['closed'].includes(room.phase) || (room.phase !== 'pending' && (!room.players?.[saved.uid] || room.players[saved.uid].status === 'left'))) {
+      localStorage.removeItem(SESSION_KEY);
+      toast('Sitzung beendet', 'Der Raum oder deine Teilnahme ist nicht mehr verfügbar.', 'warn');
+      return;
+    }
+    state.uid = saved.uid; state.playerName = saved.name; state.roomCode = saved.code;
+    state.room = room; state.subscriptionStartedAt = now();
+    attachRoomListener(); if (room.phase !== 'pending') { showGameState(); renderAll(); }
+    toast('Sitzung wiederhergestellt', `Raum ${saved.code}`, 'success');
+  } catch (error) { toast('Wiederherstellung wartet', error.message, 'warn'); }
 }
 
 function validatePlayerName() {
@@ -190,9 +195,11 @@ function validatePlayerName() {
 async function createLobby() {
   const name = validatePlayerName();
   if (!name) return;
-  const uid = getPlayerUid();
   $('createRoomBtn').disabled = true;
   try {
+    await initBackend();
+    bindConnection();
+    const uid = getPlayerUid();
     let code = null;
     for (let i=0; i<18; i++) {
       const attempt = randomCode();
@@ -205,8 +212,8 @@ async function createLobby() {
     state.playerName = name;
     state.uid = uid;
     state.roomCode = code;
-    persistActiveRoomSession();
     state.subscriptionStartedAt = now();
+    persistSession();
     attachRoomListener();
     showGameState();
     toast('Lobby erstellt', `Dein Raumcode ist ${code}. Teile ihn mit deinem Team.`, 'success');
@@ -224,10 +231,12 @@ async function joinLobby() {
   if (!/^\d{4}$/.test(code)) { toast('Raumcode prüfen', 'Bitte gib den vierstelligen Code ein.', 'warn'); return; }
   $('joinRoomBtn').disabled = true;
   try {
-    const room = await primeRoomForTransaction(code);
-    if (!room || room.phase === 'closed') { toast('Raum nicht gefunden', 'Überprüfe den Code oder bitte den Host um eine neue Lobby.', 'danger'); return; }
+    await initBackend();
+    bindConnection();
+    const room = getBackendMode() === 'worker' ? null : await getRoom(code);
+    if (getBackendMode() !== 'worker' && (!room || room.phase === 'closed')) { toast('Raum nicht gefunden', 'Überprüfe den Code oder bitte den Host um eine neue Lobby.', 'danger'); return; }
     let failure = null;
-    const updated = await mutateRoom(code, (current) => {
+    const updated = getBackendMode() === 'worker' ? await workerCommand(code,'join',{name}) : await mutateRoom(code, (current) => {
       const result = addPlayerToRoom(current, getPlayerUid(), name);
       if (!result.ok) { failure = result.reason; return null; }
       return current;
@@ -236,11 +245,11 @@ async function joinLobby() {
     state.playerName = name;
     state.uid = getPlayerUid();
     state.roomCode = code;
-    persistActiveRoomSession();
     state.subscriptionStartedAt = now();
+    persistSession();
     attachRoomListener();
-    showGameState();
-    toast('Verbunden', `Du bist dem Raum ${code} beigetreten.`, 'success');
+    if (getBackendMode() !== 'worker') showGameState();
+    toast(getBackendMode() === 'worker' ? 'Beitritt angefragt' : 'Verbunden', getBackendMode() === 'worker' ? 'Der Host muss deinen Beitritt bestätigen.' : `Du bist dem Raum ${code} beigetreten.`, 'info');
     Sound.success();
   } catch (error) {
     console.error(error);
@@ -250,16 +259,21 @@ async function joinLobby() {
 
 function attachRoomListener() {
   state.unsubscribe?.();
-  state.unsubscribe = subscribeRoom(state.roomCode, (room) => {
+  const subscribedCode=state.roomCode;
+  state.unsubscribe = subscribeRoom(subscribedCode, (room) => {
+    if (state.roomCode !== subscribedCode) return;
     if (!room || room.phase === 'closed') {
       if (state.roomCode) toast('Raum geschlossen', 'Die Lobby ist nicht mehr verfügbar.', 'warn');
       localExit();
       return;
     }
+    if (room.phase === 'pending') { state.room=room; $('pendingStatus').classList.remove('hidden'); $('createRoomBtn').disabled=true; $('joinRoomBtn').disabled=true; $('entryScreen').classList.remove('hidden'); $('lobbyScreen').classList.add('hidden'); $('gameScreen').classList.add('hidden'); $('leaveBtn').classList.remove('hidden'); return; }
+    if (!room.players?.[state.uid] || room.players[state.uid].status === 'left') { localExit(); return; }
+    $('pendingStatus').classList.add('hidden');
     const priorPhase = state.room?.phase;
     state.room = room;
     const self = getSelf();
-    if (self?.location && !state.ownLocation) state.ownLocation = self.location;
+    // Persisted coordinates are not a fresh device measurement.
     showGameState();
     renderAll();
     handleAnnouncement(room);
@@ -270,7 +284,7 @@ function attachRoomListener() {
     console.error('Room listener error', error);
     state.connected = false;
     setConnectionBadge();
-    toast('Verbindung unterbrochen', 'Die App versucht, die Verbindung wiederherzustellen.', 'warn', 5000);
+    if (now()-(state.lastConnectionError || 0)>15000) { state.lastConnectionError=now(); toast('Verbindung unterbrochen', 'Die App versucht, die Verbindung wiederherzustellen.', 'warn', 5000); }
   });
 }
 
@@ -309,7 +323,8 @@ function onPhaseChanged(phase) {
 async function saveSettings(patch) {
   if (!state.roomCode || !isHost()) return;
   try {
-    await mutateRoom(state.roomCode, (room) => updateSettings(room, state.uid, patch));
+    const result = getBackendMode() === 'worker' ? await workerCommand(state.roomCode,'settings',{patch}) : await mutateRoom(state.roomCode, (room) => updateSettings(room, state.uid, patch));
+    if (!result) throw new Error('Einstellung wurde abgewiesen. Bitte Raumstatus prüfen.');
   } catch (error) { toast('Einstellung nicht gespeichert', error?.message || 'Bitte erneut versuchen.', 'danger'); }
 }
 
@@ -320,13 +335,19 @@ function renderAll() {
   setConnectionBadge();
 }
 
+function saveCenter(center) { saveSettings({ center }); }
+
 function renderLobby() {
   const room = state.room;
+  const requests = $('joinRequests');
+  requests.innerHTML = isHost() ? Object.entries(room.joinRequests || {}).map(([id,request]) => `<p>${escapeHTML(request.name)} möchte beitreten. <button class="button button-secondary" data-approve="${escapeHTML(id)}">Zulassen</button></p>`).join('') : '';
+  requests.querySelectorAll('[data-approve]').forEach((button) => button.addEventListener('click', async () => { try { button.disabled=true; await workerCommand(state.roomCode,'approveJoin',{targetId:button.dataset.approve}); } catch (error) { button.disabled=false; toast('Beitritt abgewiesen',error.message,'warn'); } }));
   $('lobbyRoomCode').textContent = room.code || state.roomCode;
   $('hostBadge').classList.toggle('hidden', !isHost());
   $('hostSettings').classList.toggle('hidden', !isHost());
   $('guestSettingsNote').classList.toggle('hidden', isHost());
   document.querySelectorAll('#hostSettings input, #hostSettings button').forEach((input) => { input.disabled = !isHost(); });
+  updateLobbyMap(room, isHost(), saveCenter);
   const settings = room.settings || DEFAULT_SETTINGS;
   const active = activePlayers();
   $('lobbyPlayerCount').textContent = `${active.length} / ${MAX_PLAYERS}`;
@@ -344,7 +365,7 @@ function renderLobby() {
   document.querySelectorAll('input[name="mode"]').forEach((input) => { input.checked = input.value === settings.mode; });
   document.querySelectorAll('[data-skill]').forEach((input) => { input.checked = settings.skills?.[input.dataset.skill] !== false; });
   $('lobbyPlayers').innerHTML = active.map((player) => `
-    <div class="lobby-player"><div class="player-avatar">${escapeHTML((player.name || '?').slice(0,1).toUpperCase())}</div><div class="player-meta"><strong>${displayName(player)}${player.id === state.uid ? ' <span style="color:var(--cyan)">(DU)</span>' : ''}</strong><small>${player.isHost ? 'LOBBY HOST' : 'OPERATIVE'} · VERBUNDEN</small></div>${player.isHost ? '<span class="player-tag">★ HOST</span>' : '<span class="player-tag">READY</span>'}</div>
+    <div class="lobby-player"><div class="player-avatar">${escapeHTML((player.name || '?').slice(0,1).toUpperCase())}</div><div class="player-meta"><strong>${displayName(player)}${player.id === state.uid ? ' <span style="color:var(--cyan)">(DU)</span>' : ''}</strong><small>${player.isHost ? 'LOBBY HOST' : 'OPERATIVE'} · TEILNEHMER</small></div>${player.isHost ? '<span class="player-tag">★ HOST</span>' : '<span class="player-tag">READY</span>'}</div>
   `).join('');
   $('startGameBtn').classList.toggle('hidden', !isHost());
   const invalidRoles = Number(settings.seekerCount || 1) >= active.length;
@@ -359,7 +380,7 @@ async function startGame() {
   $('startGameBtn').disabled = true;
   try {
     let response;
-    const result = await mutateRoom(state.roomCode, (room) => {
+    const result = getBackendMode() === 'worker' ? await workerCommand(state.roomCode,'start') : await mutateRoom(state.roomCode, (room) => {
       response = startCountdown(room, state.uid, state.ownLocation || getSelf()?.location);
       if (!response.ok) return null;
       return room;
@@ -406,7 +427,7 @@ function renderGame() {
   $('timerProgress').style.width = `${totalTime > 0 ? clamp(timeLeft / totalTime * 100, 0,100) : 0}%`;
   $('freezeTimer').textContent = formatTime(timerSeconds());
   const seekerLock = phase === 'hide' && role === 'seeker';
-  const empFrozen = role === 'seeker' && (self.effects?.frozenUntil || 0) > now() && phase === 'playing';
+  const empFrozen = (self.effects?.frozenUntil || 0) > now() && phase === 'playing';
   $('hideFreeze').classList.toggle('hidden', !seekerLock && !empFrozen);
   if (empFrozen) {
     $('hideFreeze').querySelector('h2').innerHTML = 'EMP <br><span class="text-neon">LOCKDOWN.</span>';
@@ -571,15 +592,17 @@ async function requestGPS() {
   if (state.gpsPending) return;
   state.gpsPending = true;
   $('gpsBtn').textContent = 'GPS wird gesucht…';
+  const requestedCode=state.roomCode;
   const onSuccess = async (position) => {
-    if (!state.roomCode || !state.uid) return;
+    if (state.roomCode !== requestedCode || !state.uid) return;
     const coords = position.coords;
-    state.ownLocation = { lat:coords.latitude, lng:coords.longitude, accuracy:coords.accuracy };
+    state.ownLocation = { lat:coords.latitude, lng:coords.longitude, accuracy:coords.accuracy, measuredAt:position.timestamp + (now() - Date.now()) };
+    state.gpsError = null;
     state.gpsPending = false;
     $('gpsBtn').textContent = '◎ GPS verbunden';
     $('mapNotice').classList.add('hidden');
     centerMap(state.ownLocation);
-    if (now() - state.lastLocationWrite > 6500) {
+    if (state.connected && now() - state.lastLocationWrite > 6500) {
       state.lastLocationWrite = now();
       try { await updatePlayerLocation(state.roomCode, state.uid, state.ownLocation); }
       catch (error) { console.warn('Could not sync GPS', error); toast('GPS lokal aktiv', 'Die Position konnte noch nicht synchronisiert werden.', 'warn'); }
@@ -593,6 +616,7 @@ async function requestGPS() {
   };
   const onError = (error) => {
     state.gpsPending = false;
+    state.ownLocation = null; state.zone = null; state.gpsError = error?.code === 1 ? 'GPS verweigert' : 'GPS nicht verfügbar';
     if (state.watchId !== null) navigator.geolocation.clearWatch(state.watchId);
     state.watchId = null;
     $('gpsBtn').textContent = '◎ GPS erneut versuchen';
@@ -603,7 +627,7 @@ async function requestGPS() {
     // getCurrentPosition presents a permission prompt only after the user's explicit click.
     navigator.geolocation.getCurrentPosition(onSuccess, onError, { enableHighAccuracy:true, timeout:14000, maximumAge:2000 });
     state.watchId = navigator.geolocation.watchPosition(onSuccess, (error) => {
-      if (error?.code === 1) onError(error);
+      onError(error);
     }, { enableHighAccuracy:true, timeout:18000, maximumAge:3500 });
   } catch (error) { onError(error); }
 }
@@ -620,25 +644,26 @@ async function copyRoomCode() {
 }
 
 function confirmLeaveRoom() {
-  openModal({ kicker:'MISSION CONTROL', title:'Raum verlassen?', body:'<p class="modal-copy">Dein Operative wird als abgemeldet markiert. Bei einer laufenden Runde kann das nicht rückgängig gemacht werden.</p>', actions:[
+  openModal({ kicker:'MISSION CONTROL', title:'Raum verlassen?', body:'<p class="modal-copy">Du verlässt den Raum. Wenn der Host geht, wird der Raum für alle geschlossen.</p>', actions:[
     {label:'Bleiben',variant:'button-secondary'},
     {label:'Verlassen',variant:'button-danger',onClick:async()=>{
       const code = state.roomCode;
-      const hostLeavingLobby = isHost() && state.room?.phase === 'lobby';
-      try { await leaveRoom(code,state.uid); if (hostLeavingLobby) await deleteRoom(code); }
-      catch (error) { console.warn(error); }
+      try { await leaveRoom(code,state.uid); }
+      catch (error) { toast('Verlassen fehlgeschlagen', error.message, 'danger'); return; }
       localExit();
     }}
   ]});
 }
 
 function localExit() {
-  clearActiveRoomSession();
+  try { localStorage.removeItem(SESSION_KEY); } catch {}
+  clearTimeout(state.radiusSaveTimer);
   state.unsubscribe?.(); state.unsubscribe = null;
   if (state.watchId !== null && 'geolocation' in navigator) navigator.geolocation.clearWatch(state.watchId);
   state.watchId = null;
   state.roomCode = null; state.room = null; state.ownLocation = null;
-  resetMap();
+  $('pendingStatus').classList.add('hidden'); $('createRoomBtn').disabled=false; $('joinRoomBtn').disabled=false;
+  resetMap(); resetLobbyMap(); state.zone = null;
   state.lastAnnouncementId = null; state.lastSeekerSideAnnouncementId = null; state.seenCatchRequest = null;
   Sound.stopTension(); closeModal(); showGameState();
 }
@@ -671,8 +696,8 @@ function handleCatchRequest(room) {
   openModal({ kicker:'CATCH CONFIRMATION', title:'Wurdest du gefangen?', closeable:false,
     body:`<p class="modal-copy"><strong>${displayName(seeker)}</strong> meldet eine Begegnung mit dir. Bestätige nur, wenn ihr euch tatsächlich gesehen habt.</p><div class="safety-copy">Bitte bleib in einem öffentlichen und sicheren Bereich. GPS allein ist kein Beweis für eine Gefangennahme.</div>`,
     actions:[
-      {label:'Nein',variant:'button-secondary',onClick:async()=>{ await respondToCatch(state.roomCode,state.uid,false); state.seenCatchRequest=null; }},
-      {label:'Ja, gefangen',variant:'button-danger',onClick:async()=>{ await respondToCatch(state.roomCode,state.uid,true); state.seenCatchRequest=null; Sound.alert(); }}
+      {label:'Nein',variant:'button-secondary',onClick:async()=>{ const result=await respondToCatch(state.roomCode,state.uid,false,request.id); if (!result) throw new Error('Fanganfrage ist abgelaufen.'); state.seenCatchRequest=null; }},
+      {label:'Ja, gefangen',variant:'button-danger',onClick:async()=>{ const result=await respondToCatch(state.roomCode,state.uid,true,request.id); if (!result) throw new Error('Fanganfrage ist abgelaufen.'); state.seenCatchRequest=null; Sound.alert(); }}
     ]
   });
 }
@@ -680,7 +705,7 @@ function handleCatchRequest(room) {
 function handleEffects(room) {
   const self = room.players?.[state.uid];
   if (!self) return;
-  if (self.effects?.trackerUntil && self.effects.trackerUntil <= now()) {
+  if (getBackendMode() !== 'worker' && self.effects?.trackerUntil && self.effects.trackerUntil <= now()) {
     // Clear expired local effects once on the user's own transaction.
     mutateRoom(state.roomCode, (current) => {
       const player = current.players?.[state.uid];
@@ -745,7 +770,8 @@ function startDecoyPlacement() {
   ]});
 }
 
-function startCodeTask() {
+async function startCodeTask() {
+  if (getBackendMode() === 'worker') return startServerCodeTask();
   const role = currentRole();
   if (!canUseGame()) { toast('Task noch gesperrt', 'Aufgaben sind während der aktiven Hider-Phase oder im Match verfügbar.', 'warn'); return; }
   const a = Math.floor(12 + Math.random()*38);
@@ -765,8 +791,26 @@ function startCodeTask() {
   window.setTimeout(() => $('taskAnswer')?.focus(), 80);
 }
 
+async function startServerCodeTask() {
+  try {
+    const {result:challenge} = await workerCommand(state.roomCode,'beginTask',{kind:'code'});
+    openModal({title:'Code knacken',body:`<p class="modal-copy">Server-Aufgabe: ${escapeHTML(challenge.prompt)} = ?</p><label for="taskAnswer">Antwort</label><input id="taskAnswer" class="modal-input" type="number" inputmode="numeric">`,actions:[
+      {label:'Abbrechen'},
+      {label:'Prüfen',variant:'button-primary',keepOpen:true,onClick:async()=>{
+        const ok=await completeTask(state.roomCode,state.uid,'code',{id:challenge.id,answer:Number($('taskAnswer').value)});
+        if (ok) { closeModal(); Sound.success(); toast('Task abgeschlossen','+25 Credits','success'); }
+      }}
+    ]});
+  } catch (error) { toast('Aufgabe nicht verfügbar',error.message,'warn'); }
+}
+
 async function startShakeChallenge() {
   if (!canUseGame()) { toast('Challenge nicht verfügbar', 'Aufgaben sind während einer aktiven Phase verfügbar.', 'warn'); return; }
+  if (getBackendMode() === 'worker') {
+    try { state.shakeChallenge=(await workerCommand(state.roomCode,'beginTask',{kind:'shake'})).result; }
+    catch (error) { toast('Challenge nicht verfügbar',error.message,'warn'); return; }
+  }
+  state.shakeStartedAt=Date.now(); state.lastShakeAt=0;
   state.shakeCount = 0; state.challengeDone = false;
   openModal({ kicker:'MOVEMENT PROTOCOL / 02', title:'Shake Challenge', body:`<p class="modal-copy">Schüttle dein Gerät 10-mal innerhalb von 10 Sekunden. Auf Desktop kannst du die Bewegung über den Simulationsbutton auslösen.</p><div class="puzzle-code"><span id="shakeCounter">0</span> / 10</div><div class="challenge-progress"><span id="shakeProgress"></span></div><p class="puzzle-hint" id="shakeHint">Warte auf Bewegungssignal …</p><div class="shake-buttons"><button class="button button-secondary shake-button" type="button" id="simulateShakeBtn">+1 Shake (Demo)</button><button class="button button-secondary shake-button" type="button" id="permissionShakeBtn">Sensor aktivieren</button></div>`, actions:[{label:'Abbrechen',variant:'button-secondary'}] });
   $('simulateShakeBtn').addEventListener('click', () => incrementShake());
@@ -794,6 +838,8 @@ async function startShakeChallenge() {
 
 function incrementShake() {
   if (state.challengeDone || $('modalRoot').classList.contains('hidden')) return;
+  if (Date.now()-state.lastShakeAt<200) return;
+  state.lastShakeAt=Date.now();
   state.shakeCount++;
   $('shakeCounter').textContent = String(state.shakeCount);
   $('shakeProgress').style.width = `${Math.min(100,state.shakeCount/state.shakeTarget*100)}%`;
@@ -802,10 +848,13 @@ function incrementShake() {
     state.challengeDone = true;
     stopShakeChallenge();
     closeModal();
-    completeTask(state.roomCode,state.uid,'shake').then((ok) => {
+    const delay=getBackendMode() === 'worker' ? Math.max(0,8100-(Date.now()-state.shakeStartedAt)) : 0;
+    const challengeId=state.shakeChallenge?.id;
+    const code=state.roomCode, uid=state.uid;
+    setTimeout(() => completeTask(code,uid,'shake',{id:challengeId}).then((ok) => {
       if (ok) { Sound.success(); toast('Shake Challenge geschafft', '+15 Credits gutgeschrieben.', 'success'); }
       else toast('Challenge nicht verfügbar', 'Die Runde hat sich geändert.', 'warn');
-    });
+    }).catch((error)=>toast('Challenge nicht bestätigt',error.message,'warn')),delay);
   }
 }
 
@@ -819,8 +868,13 @@ function stopShakeChallenge() {
 function tick() {
   const room = state.room;
   if (!room || !state.roomCode) return;
-  if (['countdown','reveal','hide','playing'].includes(room.phase) && room.phaseEndsAt && now() >= room.phaseEndsAt) {
-    advanceExpiredPhase(state.roomCode, room).catch((error) => console.warn('phase advance failed', error));
+  state.zone = evaluateZone(state.zone, {location:state.ownLocation, center:room.settings?.center, radius:room.settings?.radius, connected:state.connected, timestamp:now()});
+  const labels = {inside:'Innerhalb der Zone', warning:`Zone verlassen? Rückkehr: ${state.zone.remaining} s`, outside:getBackendMode() === 'worker' ? 'Außerhalb der Zone – Server prüft die Strafe anhand frischer Messungen.' : 'Anhaltend außerhalb – Host informieren. Keine automatische Strafe.', uncertain:'GPS ungenau – keine Strafe', stale:'GPS veraltet – keine Strafe', unavailable:state.gpsError || 'GPS nicht verfügbar', offline:'Verbindung unterbrochen – keine Strafe'};
+  const gpsStatus = $('gpsStatus');
+  if (gpsStatus) gpsStatus.textContent = (getBackendMode() === 'worker' && getSelf()?.zone?.violations ? `Bestätigte Zonenverstöße: ${getSelf().zone.violations} · ` : '') + labels[state.zone.status] + (state.ownLocation ? ` · ±${Math.round(state.ownLocation.accuracy)} m · Messung ${Math.max(0,Math.floor((now()-state.ownLocation.measuredAt)/1000))} s alt` : '');
+  if (isHost() && state.connected && !state.advancingPhase && ['countdown','reveal','hide','playing'].includes(room.phase) && room.phaseEndsAt && now() >= room.phaseEndsAt) {
+    state.advancingPhase = true;
+    advanceExpiredPhase(state.roomCode, room).catch((error) => console.warn('phase advance failed', error)).finally(() => { state.advancingPhase = false; });
   }
   if (room.phase === 'playing') {
     const self = getSelf();
@@ -829,7 +883,7 @@ function tick() {
       maybePayTimeReward(state.roomCode,state.uid).catch(() => {});
     }
     // Remove expired decoys/traps on a shared transaction. Stale entries never persist indefinitely.
-    if (now() - (state.lastCleanupAt || 0) > 15_000) {
+    if (getBackendMode() !== 'worker' && isHost() && state.connected && now() - (state.lastCleanupAt || 0) > 15_000) {
       state.lastCleanupAt = now();
       mutateRoom(state.roomCode, (current) => {
         let changed = false;

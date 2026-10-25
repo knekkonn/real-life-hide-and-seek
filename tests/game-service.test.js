@@ -29,7 +29,7 @@ test('host settings are clamped and non-host writes are rejected', () => {
   updateSettings(room, 'host-1', { hideDuration:1, gameDuration:99999, radius:2400, skills:{ sonar:false } });
   assert.equal(room.settings.hideDuration, 120);
   assert.equal(room.settings.gameDuration, 1800);
-  assert.equal(room.settings.radius, 1500);
+  assert.equal(room.settings.radius, 2000);
   assert.equal(room.settings.skills.sonar, false);
   assert.equal(room.settings.skills.tracker, true);
 });

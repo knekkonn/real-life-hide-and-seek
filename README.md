@@ -1,3 +1,17 @@
+# HIDE//SEEK – Reparaturentwurf
+
+**Noch nicht produktionsreif und nicht veröffentlicht.** Der vorhandene Code wurde repariert und um einen optionalen Cloudflare-Worker/D1-Dienst ergänzt. GitHub Pages bleibt die Oberfläche, Firebase Authentication die Identität. Im Worker-Modus ersetzt D1 die bisherige gemeinsame Firebase-Raumdatenhaltung. Ohne gesetzte `WORKER_URL` bleibt der ursprüngliche Firebase-Testpfad aktiv; seine Entwicklungsregeln sind nicht für öffentliche Nutzung geeignet.
+
+- Einrichtung und notwendige Mac-/Firebase-/Cloudflare-Schritte: [BACKEND.md](BACKEND.md)
+- Ausgeführte Tests, Grenzen und Geräte-Abnahme: [VALIDATION.md](VALIDATION.md)
+- `npm test` benötigt Node.js 24, keine zusätzlichen npm-Pakete.
+
+Geändert: `index.html`, `styles.css`, `sw.js`, `js/backend.js`, `js/config.js`, `js/game-service.js`, `js/main.js`, `js/map.js`, bestehende Tests und diese README. Neu: `js/gps.js`, `js/transactions.js`, `js/store.js`, `worker/` (API, Authentifizierung, Spielautorisierung, D1-Migration, Wrangler-Konfiguration), `database.rules.production.json`, `firebase.json`, zusätzliche Regressions-/Worker-/Emulatortests und die beiden Anleitungen. Manifest, Symbole, Skills und Audio-Grundlagen bleiben erhalten.
+
+Die folgende ursprüngliche Dokumentation beschreibt den Ausgangsprototyp. Hinweise zu Demo-Modus und Hosting sind historisch; für den aktuellen Stand gelten die Anleitungen oben.
+
+---
+
 # HIDE//SEEK — Real Life Multiplayer
 
 Eine responsive, PWA-fähige Web-App für ein GPS-basiertes Real-Life-Hide-and-Seek-Spiel. Die Oberfläche ist auf Smartphones ausgelegt und funktioniert auch auf Tablet/Desktop.
