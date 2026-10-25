@@ -379,6 +379,23 @@ function applyCatch(room,seekerId,targetId,timestamp) {
   return true;
 }
 
+export function applyForcedElimination(room,seekerId,targetId,timestamp=now(),reason='relocation') {
+  const target=room.players?.[targetId],seeker=room.players?.[seekerId];
+  if(!target?.active||target.role!=='hider'||!seeker||seeker.role!=='seeker') return false;
+  awardElapsedHiderPoints(room,timestamp);
+  target.role='spectator'; target.status='caught'; target.active=false; target.inventory=[];
+  target.activeTask=null; target.forcedRelocation=null; target.zoneEvacuations={};
+  target.location=null; target.locationAt=0; target.effects={};
+  rewardSeekerForCatch(room,seeker,target,timestamp);
+  room.announcement={id:randomId('announcement'),type:'global',title:'RELOCATION_FAILED',message:`${target.name} hat die angeordnete ${reason==='zone'?'Sperrzone nicht rechtzeitig verlassen':'Umpositionierung'} nicht abgeschlossen und scheidet aus.`,createdAt:timestamp,actorId:seekerId,targetId};
+  if(!Object.values(room.players||{}).some(player=>player.active&&player.role==='hider')) {
+    room.phase='finished'; room.winner='seekers'; room.phaseEndsAt=null; room.pendingCatch=null; room.photoMetadata={};
+    awardElapsedHiderPoints(room,timestamp); finalizeRound(room,timestamp);
+    room.announcement={id:randomId('announcement'),type:'global',title:'MISSION COMPLETE',message:'Alle Hider wurden gefangen oder haben eine Pflichtaufgabe verpasst.',createdAt:timestamp};
+  }
+  return true;
+}
+
 export async function buySkill(code, uid, skillId) {
   const remote = remoteAction('buySkill', [code, uid, skillId]);
   if (remote) return Promise.resolve(remote).then(result=>typeof result==='boolean'?{ok:result,reason:result?'':'Nicht genug Credits oder Fähigkeit aktuell nicht verfügbar.'}:result);
@@ -462,6 +479,12 @@ export async function activateSkill(code, uid, skillId, params={}) {
       const nearSeeker=Object.values(room.players||{}).some(candidate=>candidate.active&&candidate.role==='seeker'&&freshPreciseLocation(candidate,timestamp)&&distanceMeters(player.location,candidate.location)<=20);
       if(player.role!=='hider' || room.phase!=='playing' || player.effects.closecall || !freshPreciseLocation(player,timestamp) || !nearSeeker) return null;
       player.effects.closecall={startedAt:timestamp,progressSince:timestamp,lastProofAt:timestamp,expiresAt:timestamp+90000,duration:tuning.duration*1000,radius:20};
+    } else if(skillId==='freeze') {
+      if(player.role!=='hider'||room.phase!=='playing'||!freshPreciseLocation(player,timestamp)) return null;
+      const target=Object.values(room.players||{}).filter(candidate=>candidate.active&&candidate.role==='seeker'&&freshPreciseLocation(candidate,timestamp)&&distanceMeters(player.location,candidate.location)<=tuning.freezeRadius).sort((a,b)=>distanceMeters(player.location,a.location)-distanceMeters(player.location,b.location))[0];
+      if(!target) return null;
+      target.effects ||= {}; target.effects.frozenUntil=Math.max(Number(target.effects.frozenUntil)||0,timestamp+tuning.duration*1000); target.effects.freezeSource='hider';
+      room.announcementForSeeker={id:randomId('announcement'),targetId:target.id,title:'FROZEN',message:`Ein Hider hat dich für ${tuning.duration} Sekunden eingefroren.`,createdAt:timestamp};
     }
     player.skillsUsed=(Number(player.skillsUsed)||0)+1;
     room.announcement = { id:randomId('announcement'), type:'private', targetId:uid, title:'SKILL ACTIVATED', message:`${skill.short} eingesetzt.`, createdAt:timestamp };

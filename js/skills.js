@@ -11,7 +11,8 @@ export const SKILLS = {
   shield: { id:'shield', name:'Schild / Zweite Chance', short:'Schild', icon:'⬡', side:'hider', price:50, strength:1.4, duration:0, description:'Blockiert einen Fangversuch einmalig.', action:'Schild aktivieren' },
   seekerradar: { id:'seekerradar', name:'Seeker-Radar', short:'Seeker-Radar', icon:'◎', side:'hider', price:40, strength:1.2, duration:10, description:'Zeigt bekannte Seeker-Positionen kurz live.', action:'Seeker orten' },
   silent: { id:'silent', name:'Leise Sohlen', short:'Leise Sohlen', icon:'♧', side:'hider', price:25, strength:0.9, duration:120, description:'Deaktiviert automatische Nähewarnungen.', action:'Leise Sohlen aktivieren' },
-  closecall: { id:'closecall', name:'Mutprobe', short:'Mutprobe', icon:'⚑', side:'hider', price:20, strength:1.05, duration:20, description:'Bleibe 20 Sekunden innerhalb von 20 m eines Seekers. Der Server prüft beide frischen GPS-Signale und belohnt den riskanten Lauf mit Punkten.', action:'Mutprobe starten' }
+  closecall: { id:'closecall', name:'Mutprobe', short:'Mutprobe', icon:'⚑', side:'hider', price:20, strength:1.05, duration:20, description:'Bleibe 20 Sekunden innerhalb von 20 m eines Seekers. Der Server prüft beide frischen GPS-Signale und belohnt den riskanten Lauf mit Punkten.', action:'Mutprobe starten' },
+  freeze: { id:'freeze', name:'Frostimpuls', short:'Frostimpuls', icon:'❄', side:'hider', price:65, strength:1.6, duration:8, description:'Friert einen nahen Seeker für wenige Sekunden ein. Reichweite und Dauer passen sich der Spielfeldgröße an.', action:'Nahen Seeker einfrieren' }
 };
 
 export const SKILL_IDS = Object.keys(SKILLS);
@@ -39,6 +40,7 @@ export function skillTuning(skillId, settings=500) {
   return { ...skill, price, duration, zoneRadius:zone,
     sweepRadius:Math.round(Math.max(45,Math.min(zone*0.3,zone*0.3))),
     trapRadius:Math.round(Math.max(12,Math.min(50,zone*0.05))),
+    freezeRadius:Math.round(Math.max(12,Math.min(35,zone*0.06))),
     decoyRange:Math.round(Math.max(30,Math.min(zone*0.35,zone*0.35))) };
 }
 
@@ -49,11 +51,19 @@ export function tacticalTuning(settings={}) {
   const scale=0.7+zoneScale*0.15+timeScale*0.15;
   const scaleCost=(base)=>Math.max(5,Math.round(base*scale/5)*5);
   const relocateDistance=Math.max(15,Math.min(150,Math.round(radius*0.15)));
-  const zoneRadius=Math.max(15,Math.min(80,Math.round(radius*0.08)));
+  const maxZoneRadius=Math.max(10,Math.min(120,Math.floor(radius*0.3)));
+  const zoneRadius=Math.max(10,Math.min(80,maxZoneRadius,Math.round(radius*0.08)));
   const zoneDuration=Math.max(60,Math.min(120,Math.round(60*(0.75+zoneScale*0.15+timeScale*0.1))));
+  const zoneCostFor=(selectedRadius=zoneRadius,selectedDuration=zoneDuration)=>{
+    const r=Math.max(10,Math.min(maxZoneRadius,Number(selectedRadius)||zoneRadius));
+    const d=Math.max(60,Math.min(180,Number(selectedDuration)||zoneDuration));
+    return scaleCost(25*Math.sqrt(r/zoneRadius)*Math.sqrt(d/zoneDuration));
+  };
   return {
-    scale, radius, gameDuration, relocateDistance, zoneRadius, zoneDuration,
-    zoneCost:scaleCost(25),
+    scale, radius, gameDuration, relocateDistance, zoneRadius, maxZoneRadius, zoneDuration,
+    zoneEvacuationSeconds:45,
+    relocationDeadlineSeconds:Math.max(120,Math.min(300,Math.round(90+relocateDistance*1.2))),
+    zoneCost:zoneCostFor(), zoneCostFor,
     relocationCost:(mode,count=1)=>scaleCost(mode==='all'?25+Math.max(0,count-1)*12:mode==='random'?35:25),
     exchangeReward:(seconds)=>Math.max(1,Math.floor((seconds/30)*6*scale)),
     closeCallReward:Math.max(3,Math.round(5*scale))

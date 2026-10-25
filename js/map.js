@@ -4,6 +4,7 @@ import { escapeHTML, now, distanceMeters, bearingDegrees, formatTime } from './u
 let map = null;
 let radiusCircle = null;
 let restrictedCircles = new Map();
+let relocationCircle = null;
 let centerMarker = null;
 let mapMarkers = new Map();
 let lastDrawKey = '';
@@ -17,6 +18,9 @@ let roundTrackFrame = null;
 let roundTrackSignature = '';
 let mapPlacementHandler = null;
 let mapPlacementBanner = null;
+let mapPlacementOptions = null;
+let mapPlacementPoint = null;
+let placementPreviewCircle = null;
 let focusedTaskTarget = '';
 const TRACK_COLORS = ['#49d7ff','#ff718d','#c9ff54','#b88cff','#ffbe5c','#62e6bc','#ff78d4','#89a9ff','#e8ec73','#ff9468'];
 const OSM_TILES = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
@@ -55,19 +59,30 @@ export function centerMap(location) {
   if (map && location && Number.isFinite(location.lat) && Number.isFinite(location.lng)) map.setView([location.lat, location.lng], Math.max(map.getZoom(), 15), { animate:true });
 }
 
-export function beginMapPlacement(onSelect) {
+export function beginMapPlacement(onSelect, options={}) {
   const target=map || initMap();
   if(!target || typeof onSelect!=='function') return false;
   cancelMapPlacement();
   mapPlacementHandler=onSelect;
+  mapPlacementOptions=options;
+  mapPlacementPoint=null;
   const container=target.getContainer();
   container.classList.add('map-placement-active');
   mapPlacementBanner=document.createElement('div');
   mapPlacementBanner.className='map-placement-banner';
-  const hint=document.createElement('span'); hint.textContent='Tippe oder klicke auf den gewünschten Ort';
+  const hint=document.createElement('span'); hint.textContent=options.hint||'Tippe oder klicke auf den gewünschten Ort';
   const cancel=document.createElement('button'); cancel.type='button'; cancel.className='button button-secondary'; cancel.textContent='Abbrechen';
   cancel.addEventListener('click',(event)=>{event.stopPropagation();cancelMapPlacement();});
-  mapPlacementBanner.append(hint,cancel);
+  if(options.confirm) {
+    const confirm=document.createElement('button'); confirm.type='button'; confirm.className='button button-primary'; confirm.textContent='Sperrzone setzen'; confirm.disabled=true; confirm.dataset.placementConfirm='';
+    confirm.addEventListener('click',(event)=>{
+      event.stopPropagation();
+      if(!mapPlacementPoint||!mapPlacementHandler) return;
+      const callback=mapPlacementHandler,point=mapPlacementPoint;
+      cancelMapPlacement(); Promise.resolve().then(()=>callback(point)).catch(error=>console.error('Map placement failed',error));
+    });
+    mapPlacementBanner.append(hint,confirm,cancel);
+  } else mapPlacementBanner.append(hint,cancel);
   L.DomEvent.disableClickPropagation(mapPlacementBanner);
   container.appendChild(mapPlacementBanner);
   target.on('click',handleMapPlacementClick);
@@ -76,6 +91,8 @@ export function beginMapPlacement(onSelect) {
 
 export function cancelMapPlacement() {
   if(map) map.off('click',handleMapPlacementClick);
+  if(map&&placementPreviewCircle) map.removeLayer(placementPreviewCircle);
+  placementPreviewCircle=null; mapPlacementPoint=null; mapPlacementOptions=null;
   map?.getContainer().classList.remove('map-placement-active');
   mapPlacementBanner?.remove(); mapPlacementBanner=null; mapPlacementHandler=null;
 }
@@ -83,6 +100,15 @@ export function cancelMapPlacement() {
 function handleMapPlacementClick(event) {
   if(!mapPlacementHandler || !Number.isFinite(event.latlng?.lat) || !Number.isFinite(event.latlng?.lng)) return;
   const callback=mapPlacementHandler,point={lat:event.latlng.lat,lng:event.latlng.lng};
+  if(mapPlacementOptions?.confirm&&Number(mapPlacementOptions.radius)>0) {
+    mapPlacementPoint=point;
+    if(!placementPreviewCircle) placementPreviewCircle=L.circle([point.lat,point.lng],{radius:Number(mapPlacementOptions.radius),color:'#ff637e',weight:3,opacity:1,fillColor:'#ff637e',fillOpacity:.18,dashArray:'7 5',interactive:false}).addTo(map);
+    else placementPreviewCircle.setLatLng([point.lat,point.lng]).setRadius(Number(mapPlacementOptions.radius));
+    const hint=mapPlacementBanner?.querySelector('span'),confirm=mapPlacementBanner?.querySelector('[data-placement-confirm]');
+    if(hint) hint.textContent=`Vorschau · Kreisradius ${Number(mapPlacementOptions.radius)} m · Karte erneut tippen zum Verschieben`;
+    if(confirm) confirm.disabled=false;
+    return;
+  }
   cancelMapPlacement();
   Promise.resolve().then(()=>callback(point)).catch(error=>console.error('Map placement failed',error));
 }
@@ -132,6 +158,11 @@ export function updateMap(room, selfId, ownLocation, role, gpsSyncStatus='idle')
   const allowed = new Set();
   const players = Object.values(room.players || {});
   const self = room.players?.[selfId];
+  const forced=self?.role==='hider'&&room.phase==='playing'?self.forcedRelocation:null;
+  if(forced?.from&&Number.isFinite(forced.minimumMeters)) {
+    if(!relocationCircle) relocationCircle=L.circle([forced.from.lat,forced.from.lng],{radius:forced.minimumMeters,color:'#ffca6a',weight:2,opacity:.95,fillColor:'#ffca6a',fillOpacity:.08,dashArray:'4 7',interactive:false}).addTo(map);
+    else relocationCircle.setLatLng([forced.from.lat,forced.from.lng]).setRadius(forced.minimumMeters);
+  } else if(relocationCircle) { map.removeLayer(relocationCircle); relocationCircle=null; }
   if (['visit','scan'].includes(self?.activeTask?.kind) && !self.activeTask.failed && !self.activeTask.completed && self.activeTask.targetLocation && ['hide','playing'].includes(room.phase)) {
     const id = `task-target:${selfId}`;
     allowed.add(id);
@@ -246,6 +277,8 @@ export function resetMap() {
   mapMarkers.clear();
   for(const circle of restrictedCircles.values()) map.removeLayer(circle);
   restrictedCircles.clear();
+  if(relocationCircle) map.removeLayer(relocationCircle);
+  relocationCircle=null;
   if (radiusCircle) map.removeLayer(radiusCircle);
   if (centerMarker) map.removeLayer(centerMarker);
   if (userCircle) map.removeLayer(userCircle);

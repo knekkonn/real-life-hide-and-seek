@@ -1,5 +1,5 @@
 // Bump this identifier whenever any shell file changes. One worker serves one complete shell.
-const CACHE_NAME = 'hide-seek-shell-v2.12.0';
+const CACHE_NAME = 'hide-seek-shell-v2.13.0';
 const APP_SHELL = [
   './', './index.html', './styles.css', './skill-lab.css', './ui-refresh.css', './manifest.webmanifest', './assets/icon.svg', './assets/mission-hero.webp',
   './js/config.js', './js/backend.js', './js/profile.js', './js/skills.js', './js/skill-lab.js', './js/utils.js', './js/gps.js', './js/photos.js', './js/transactions.js', './js/store.js', './js/map.js', './js/game-service.js', './js/main.js'
