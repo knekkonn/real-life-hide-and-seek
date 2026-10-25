@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="skill-lab.css">
+  <link rel="stylesheet" href="ui-refresh.css">
   <title>HIDE//SEEK — Real Life Multiplayer</title>
 </head>
 <body>
@@ -22,12 +23,16 @@
       </a>
       <div class="topbar-right">
         <span id="connectionBadge" class="connection-badge"><i></i><span>DEMO-MODUS</span></span>
-        <button id="soundToggle" class="icon-button" type="button" title="Sound ein/aus" aria-label="Sound ein/aus"><span id="soundIcon">♫</span></button>
+        <div class="audio-controls" role="group" aria-label="Audioeinstellungen">
+          <button id="soundToggle" class="icon-button" type="button" title="Soundeffekte ausschalten" aria-label="Soundeffekte ausschalten" aria-pressed="true"><span id="soundIcon" aria-hidden="true">♫</span></button>
+          <button id="musicToggle" class="icon-button" type="button" title="Hintergrundmusik einschalten" aria-label="Hintergrundmusik einschalten" aria-pressed="false"><span id="musicIcon" aria-hidden="true">♪</span></button>
+        </div>
         <button id="leaveBtn" class="icon-button hidden" type="button" title="Raum verlassen" aria-label="Raum verlassen">↗</button>
       </div>
     </header>
 
-    <main>
+    <a class="skip-link" href="#mainContent">Zum Inhalt springen</a>
+    <main id="mainContent">
       <section id="entryScreen" class="entry-layout">
         <div class="hero-panel">
           <div class="eyebrow"><span class="pulse-dot"></span> FIELD PROTOCOL 01 <span class="eyebrow-line"></span> GPS MULTIPLAYER</div>
@@ -140,10 +145,10 @@
               <div id="mapNotice" class="map-notice"><span>◎</span><div><strong>GPS noch nicht aktiv</strong><small>Standort freigeben, um deine Position auf der Karte anzuzeigen.</small></div><button id="mapGpsBtn" type="button">Aktivieren</button></div>
             </div>
             <div class="game-tabs" role="tablist" aria-label="Spielbereiche">
-              <button class="game-tab active" type="button" data-tab="mapTab" role="tab" aria-selected="true"><span>⌖</span> Karte</button>
-              <button class="game-tab" type="button" data-tab="shopTab" role="tab" aria-selected="false"><span>◇</span> Arsenal <b id="coinBadge">0 ◈</b></button>
-              <button class="game-tab" type="button" data-tab="tasksTab" role="tab" aria-selected="false"><span>▤</span> Aufgaben</button>
-              <button class="game-tab" type="button" data-tab="statusTab" role="tab" aria-selected="false"><span>▦</span> Status</button>
+              <button class="game-tab active" type="button" data-tab="mapTab" role="tab" aria-controls="mapTab" aria-selected="true"><span>⌖</span> Karte</button>
+              <button class="game-tab" type="button" data-tab="shopTab" role="tab" aria-controls="shopTab" aria-selected="false"><span>◇</span> Arsenal <b id="coinBadge">0 ◈</b></button>
+              <button class="game-tab" type="button" data-tab="tasksTab" role="tab" aria-controls="tasksTab" aria-selected="false"><span>▤</span> Aufgaben</button>
+              <button class="game-tab" type="button" data-tab="statusTab" role="tab" aria-controls="statusTab" aria-selected="false"><span>▦</span> Status</button>
             </div>
             <div id="mapTab" class="tab-content active" role="tabpanel">
               <div class="surface quick-actions-panel"><div class="panel-heading simple-heading"><div><span class="panel-icon">⌁</span><div><h2>Field Actions</h2><small>Schnellzugriff auf deine taktischen Optionen</small></div></div><span class="tiny-label" id="roleChip">HIDER</span></div><div id="quickActions" class="quick-actions"></div></div>
