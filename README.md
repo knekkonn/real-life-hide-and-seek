@@ -1,6 +1,6 @@
 # HIDE//SEEK – Reparaturentwurf
 
-**Noch nicht produktionsreif und nicht veröffentlicht.** Der vorhandene Code wurde repariert und um einen optionalen Cloudflare-Worker/D1-Dienst ergänzt. GitHub Pages bleibt die Oberfläche, Firebase Authentication die Identität. Im Worker-Modus ersetzt D1 die bisherige gemeinsame Firebase-Raumdatenhaltung. Ohne gesetzte `WORKER_URL` bleibt der ursprüngliche Firebase-Testpfad aktiv; seine Entwicklungsregeln sind nicht für öffentliche Nutzung geeignet.
+**Cloudflare Worker und EU-D1 sind provisioniert.** Dieser Stand verbindet GitHub Pages mit dem Worker; Firebase Authentication bleibt die Identität, D1 die maßgebliche Raumdatenbank. Der Worker prüft Fangdistanz, Aufgaben, Mitgliedschaft und private Spielerdaten serverseitig. Vor regulärem Spielbetrieb sind noch ein echter Firebase-Auth-Test sowie die Zwei-Geräte-/GPS-Abnahme nötig.
 
 - Einrichtung und notwendige Mac-/Firebase-/Cloudflare-Schritte: [BACKEND.md](BACKEND.md)
 - Ausgeführte Tests, Grenzen und Geräte-Abnahme: [VALIDATION.md](VALIDATION.md)

@@ -96,7 +96,9 @@ export function subscribeRoom(code, onValue, onError = () => {}) {
         const value = JSON.stringify(room);
         if (value !== lastValue) { lastValue = value; onValue(room); }
       } catch (error) { if (!stopped) onError(error); }
-      finally { if (!stopped) timer = setTimeout(poll, 2500); }
+      // Keep live play responsive while staying well inside Cloudflare's free
+      // daily request allowance for normal-length sessions; background tabs back off.
+      finally { if (!stopped) timer = setTimeout(poll, document.visibilityState === 'hidden' ? 30000 : 5000); }
     };
     poll();
     return () => { stopped = true; clearTimeout(timer); };
