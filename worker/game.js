@@ -9,7 +9,6 @@ export function publicRoom(source, uid, timestamp=Date.now()) {
   const room = structuredClone(source);
   const self = room.players?.[uid];
   if (!self || self.status==='left') {
-    if (room.joinRequests?.[uid]) return {code:room.code,phase:'pending',players:{},settings:{}};
     throw new Error('NOT_MEMBER');
   }
   delete room.challenges;
@@ -24,7 +23,7 @@ export function publicRoom(source, uid, timestamp=Date.now()) {
   delete room.processedActions;
   if(room.phase!=='finished') delete room.roundTracks;
   else room.roundTracks=Object.fromEntries(Object.entries(room.roundTracks||{}).map(([id,track])=>[id,{distanceMeters:Number(track.distanceMeters)||0,points:(Array.isArray(track.points)?track.points:[]).filter(point=>Array.isArray(point)&&point.length===2&&point.every(Number.isFinite)&&Math.abs(point[0])<=90&&Math.abs(point[1])<=180).slice(-240)}]));
-  if (room.hostId !== uid) delete room.joinRequests;
+  delete room.joinRequests;
   if (room.announcement?.type === 'private' && room.announcement.targetId !== uid) delete room.announcement;
   if (room.announcementForSeeker?.targetId !== uid) delete room.announcementForSeeker;
   if (room.pendingCatch && ![room.pendingCatch.targetId,room.pendingCatch.seekerId].includes(uid)) delete room.pendingCatch;
@@ -69,25 +68,20 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
     if (!validName(input.name)) throw new Error('INVALID_NAME');
     if (room.players[uid] && room.players[uid].status !== 'left') return {room,result:true};
     if (room.phase !== 'lobby') throw new Error('LOBBY_CLOSED');
-    room.joinRequests ||= {};
-    if (Object.keys(room.joinRequests).length >= 32 && !room.joinRequests[uid]) throw new Error('REQUESTS_FULL');
-    room.joinRequests[uid] = {name:input.name,createdAt:timestamp};
-    return {room,result:{pending:true}};
+    const added=game.addPlayerToRoom(room,uid,input.name);
+    if (!added.ok) {
+      if (added.reason.includes('voll')) throw new Error('ROOM_FULL');
+      if (added.reason.includes('Codename')) throw new Error('NAME_IN_USE');
+      throw new Error('LOBBY_CLOSED');
+    }
+    // Clear requests left by clients running the former host-approval flow.
+    delete room.joinRequests;
+    return {room,result:true};
   }
-  if (action === 'leaveRoom' && room.joinRequests?.[uid] && !room.players[uid]) { delete room.joinRequests[uid]; return {room,result:true}; }
   const player = member(room,uid);
   if(room.phase==='playing') game.awardElapsedHiderPoints(room,Math.min(timestamp,Number(room.matchEndsAt)||timestamp));
   if (room.phase === 'playing' && (player.effects?.frozenUntil || 0)>timestamp && !['updatePlayerLocation','leaveRoom'].includes(action)) throw new Error('FROZEN');
   if (room.phase === 'closed' && action !== 'leaveRoom') throw new Error('LOBBY_CLOSED');
-  if (action === 'approveJoin') {
-    host(room,uid);
-    const pending = room.joinRequests?.[input.targetId];
-    if (!pending || timestamp-pending.createdAt > 300000) throw new Error('REQUEST_EXPIRED');
-    const result = game.addPlayerToRoom(room,input.targetId,pending.name);
-    if (!result.ok) throw new Error(result.reason);
-    delete room.joinRequests[input.targetId];
-    return {room,result:true};
-  }
   if (action === 'newRound') {
     host(room,uid); if (room.phase !== 'finished') throw new Error('ROUND_NOT_FINISHED');
     room.phase='lobby'; room.phaseEndsAt=null; room.matchEndsAt=null; room.pendingCatch=null; room.announcement=null; room.winner=null;
@@ -224,7 +218,7 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
       if(room.photoMetadata) delete room.photoMetadata[uid];
       result=true;
       if (Object.values(room.players).every(p=>!p.active || p.status==='left')) {
-        room.phase='closed'; room.closedAt=timestamp; room.players={}; room.hostId=null; room.joinRequests={}; room.challenges={}; room.objectives={}; room.traps={}; room.decoys={}; room.itemBoxes={}; room.effects={}; room.photoMetadata={}; room.roundTracks={}; room.roundResults=[]; room.roundAchievements=[]; room.eventLog=[]; room.pendingCatch=null; room.announcement=null; room.announcementForSeeker=null; room.winner=null; room.startedAt=null; room.matchEndsAt=null; room.settings.center=null; delete room.roundPhotos;
+        room.phase='closed'; room.closedAt=timestamp; room.players={}; room.hostId=null; delete room.joinRequests; room.challenges={}; room.objectives={}; room.traps={}; room.decoys={}; room.itemBoxes={}; room.effects={}; room.photoMetadata={}; room.roundTracks={}; room.roundResults=[]; room.roundAchievements=[]; room.eventLog=[]; room.pendingCatch=null; room.announcement=null; room.announcementForSeeker=null; room.winner=null; room.startedAt=null; room.matchEndsAt=null; room.settings.center=null; delete room.roundPhotos;
       }
       break;
     default: throw new Error('UNKNOWN_ACTION');

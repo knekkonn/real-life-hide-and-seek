@@ -10,8 +10,8 @@ Stand: 25. Oktober 2026. Worker und EU-D1 sind provisioniert; die Geräte-Abnahm
 - Regression für zunächst leeren Firebase-Transaktionscache; Firebase-Transaktionsantworten werden simuliert.
 - Session-Grundlagen: bestehende Mitgliedschaft bleibt idempotent; keine Ersetzung anderer Spieler. Die Browser-Reload-Sequenz selbst ist noch nicht im Browser getestet.
 - GPS-Toleranz inklusive fehlender/ungenauer/veralteter Daten und Offline-Unterbrechungen.
-- Worker-Autorisierung, gefilterte Positionen, Geist-/Sonar-/Kompassverhalten, Host-Freigabe, sofortiger Fang mit 5-m-Grenze, OSM-Cache-Prüfung und Aufgabenbelohnung.
-- Tatsächliche SQLite-Abfragen aus dem Worker über einen lokalen D1-Testadapter, inklusive konkurrierender Beitrittsanfragen und Mitgliedschaftsschutz. Firebase-Tokenantworten sind in diesem Integrationstest simuliert.
+- Worker-Autorisierung, gefilterte Positionen, Geist-/Sonar-/Kompassverhalten, direkten Beitritt mit Namens-/Raumgrößenprüfung, sofortigen Fang mit 5-m-Grenze, OSM-Cache-Prüfung und Aufgabenbelohnung.
+- Tatsächliche SQLite-Abfragen aus dem Worker über einen lokalen D1-Testadapter, inklusive konkurrierender direkter Beitritte und Mitgliedschaftsschutz. Firebase-Tokenantworten sind in diesem Integrationstest simuliert.
 - Serverseitige GPS-Verstoßzählung, keine Strafe aus Datenlücken, dritte Strafe.
 - `git diff --check`.
 - Cloudflare-Konto, D1 EU-Datenbank, angewendetes Schema, Worker-Upload, D1-Bindung, `workers.dev`-Route und stündlichen Cron-Trigger per Cloudflare API geprüft.
@@ -30,7 +30,7 @@ Der Ausführungscontainer blockiert ausgehende Worker-Aufrufe; Browser-Steuerwer
 ## Abnahme auf zwei Geräten
 
 1. Worker und Oberfläche gemäß `BACKEND.md` auf Testadressen einrichten, RTDB erst nach korrekter Worker-Anbindung sperren.
-2. Gerät A erstellt Lobby. Gerät B fragt per Code Beitritt an. Vor Host-Freigabe darf B keine Spielerdaten erhalten. A lässt B zu. Beide sehen dieselbe Besetzung.
+2. Gerät A erstellt Lobby. Gerät B tritt mit dem Code direkt bei. Vor erfolgreichem Beitritt darf B keine Raumdaten erhalten. Danach sehen beide dieselbe Besetzung.
 3. A ändert Modus, Radius und Mittelpunkt. B sieht diese Werte nach spätestens dem nächsten erfolgreichen Abruf. Radius bis 2.000 Meter prüfen.
 4. Beide Geräte einzeln neu laden. Dieselbe Firebase-UID und Mitgliedschaft müssen wiederhergestellt werden; GPS erneut bewusst freigeben.
 5. A startet: Countdown → Enthüllung → Versteckphase → Spiel. Uhren dürfen ungefähr um Netzlaufzeit, nicht um unabhängige Timer abweichen.

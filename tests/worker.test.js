@@ -33,15 +33,14 @@ test('sonar returns approximate GPS and compass returns only a direction project
   room.players.host.effects.trackerUntil=Date.now()+60000;room.players.host.effects.trackerTarget='guest';room.players.host.effects.compassUntil=Date.now()+30000;
   assert.notDeepEqual(publicRoom(room,'host').players.guest.location,room.players.guest.location);
 });
-test('a code only requests entry; a host must approve membership', async () => {
+test('a valid room code joins directly and enforces name and lobby rules', async () => {
   const room=createRoomData('host','HOST');
   await applyAction(room,'guest',{action:'join',name:'GUEST'});
-  assert.equal(room.players.guest,undefined);
-  assert.equal(publicRoom(room,'guest').phase,'pending');
-  await assert.rejects(applyAction(room,'guest',{action:'settings',patch:{radius:2000}}),/NOT_MEMBER/);
-  await applyAction(room,'host',{action:'approveJoin',targetId:'guest'});
   assert.ok(room.players.guest);
   await assert.rejects(applyAction(room,'guest',{action:'settings',patch:{radius:2000}}),/HOST_ONLY/);
+  await assert.rejects(applyAction(room,'other',{action:'join',name:'GUEST'}),/NAME_IN_USE/);
+  room.phase='playing';
+  await assert.rejects(applyAction(room,'another',{action:'join',name:'ANOTHER'}),/LOBBY_CLOSED/);
 });
 test('a verified in-range catch is applied immediately without target confirmation', async () => {
   const room=playing();room.settings.mode='infected';
@@ -282,7 +281,7 @@ function d1() {
   };}});
   return {prepare};
 }
-test('HTTP/D1 integration preserves concurrent join requests and blocks outsider reads', async () => {
+test('HTTP/D1 integration joins players directly and blocks outsider reads', async () => {
   const originalFetch=globalThis.fetch;
   globalThis.fetch=async(url,options)=>new Response(JSON.stringify({users:[{localId:JSON.parse(options.body).idToken}]}),{status:200});
   try {
@@ -293,12 +292,11 @@ test('HTTP/D1 integration preserves concurrent join requests and blocks outsider
     const joins=await Promise.all(['guest','other'].map(uid=>worker.fetch(request(uid,{action:'join',name:uid.toUpperCase()}),env)));
     assert.deepEqual(joins.map(r=>r.status),[200,200]);
     const {room}=await (await worker.fetch(request('host'),env)).json();
-    assert.equal(Object.keys(room.joinRequests).length,2);
-    assert.equal(Object.keys(room.players).length,1);
+    assert.equal(Object.keys(room.players).length,3);
+    assert.equal(room.joinRequests,undefined);
     assert.equal((await worker.fetch(request('guest',{action:'settings',patch:{radius:2000}}),env)).status,403);
-    assert.equal((await worker.fetch(request('host',{action:'approveJoin',targetId:'guest'}),env)).status,200);
     const guestView=await (await worker.fetch(request('guest'),env)).json();
-    assert.equal(Object.keys(guestView.room.players).length,2);
+    assert.equal(Object.keys(guestView.room.players).length,3);
     assert.equal(guestView.room.joinRequests,undefined);
   } finally {globalThis.fetch=originalFetch;}
 });

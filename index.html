@@ -44,7 +44,7 @@
           <div class="card-topline"><span class="tiny-label">OPERATIONS CENTER</span><span class="status-pill"><i></i> BEREIT</span></div>
           <h2>Mission starten</h2>
           <p class="muted">Erstelle eine Lobby oder tritt einem laufenden Einsatz bei.</p>
-          <p id="pendingStatus" class="hidden" role="status">Beitritt angefragt. Warte auf die Freigabe des Hosts. Über „Verlassen“ kannst du abbrechen.</p><form id="entryForm" class="entry-form">
+          <form id="entryForm" class="entry-form">
             <label for="playerName">Dein Codename</label>
             <input id="playerName" name="playerName" maxlength="18" minlength="2" placeholder="z. B. NIGHTHAWK" autocomplete="nickname" required>
             <div class="entry-actions">
@@ -96,7 +96,7 @@
               <div class="settings-divider"></div>
               <label class="toggle-line announcement-toggle"><span><b>Gefangen-Meldungen</b><small>Banner und Alarm-Sound für alle Spieler</small></span><input id="announcementsToggle" type="checkbox" checked><i></i></label>
             </div>
-            <div class="surface zone-preview"><h3>Spielzone</h3><p id="lobbyZoneInfo">Host: Mittelpunkt durch Tippen wählen oder Marker verschieben.</p><div id="lobbyMap" aria-label="Spielzone auswählen"></div><button type="button" id="lobbyGpsBtn" class="button button-secondary">◎ GPS ausdrücklich freigeben</button><p>GPS wird nach Freigabe an das konfigurierte Backend übertragen. Im sicheren Worker-Modus werden fremde Positionen nur während berechtigter Fähigkeiten freigegeben. Ohne Worker ist dies eine ungeschützte Testversion.</p></div><div id="joinRequests" aria-live="polite"></div><div id="guestSettingsNote" class="guest-note hidden">Nur der Host kann die Einstellungen ändern.</div>
+            <div class="surface zone-preview"><h3>Spielzone</h3><p id="lobbyZoneInfo">Host: Mittelpunkt durch Tippen wählen oder Marker verschieben.</p><div id="lobbyMap" aria-label="Spielzone auswählen"></div><button type="button" id="lobbyGpsBtn" class="button button-secondary">◎ GPS ausdrücklich freigeben</button><p>GPS wird nach Freigabe an das konfigurierte Backend übertragen. Im sicheren Worker-Modus werden fremde Positionen nur während berechtigter Fähigkeiten freigegeben. Ohne Worker ist dies eine ungeschützte Testversion.</p></div><div id="guestSettingsNote" class="guest-note hidden">Nur der Host kann die Einstellungen ändern.</div>
           </div>
           <aside class="surface team-panel">
             <div class="section-heading"><div><span class="section-index">02 /</span><h2>Dein Team</h2></div><span class="player-count" id="lobbyPlayerCount">1 / 20</span></div>

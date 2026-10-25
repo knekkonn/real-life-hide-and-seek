@@ -58,7 +58,7 @@ Der Worker ist unter `https://real-life-hide-and-seek-api.knekkonn-hide-and-seek
 
 ## Verhalten des Workers
 
-- Vierstellige Codes adressieren Räume, gewähren aber keinen Lesezugriff. Ein neuer Spieler stellt eine Beitrittsanfrage. Der Host bestätigt sie in der Lobby.
+- Ein gültiger vierstelliger Code lässt Spieler direkt einer offenen Lobby beitreten. Der Worker prüft dabei Sitzung, Name, Lobbyphase und die Grenze von 20 Spielern; Raumdaten bleiben bis zum erfolgreichen Beitritt geschützt.
 - D1-Änderungen verwenden Revisionen und Compare-and-Swap. Konkurrenz überschreibt keine fremden Spielzustände; nach acht Konflikten erhält der Client eine Wiederholungsaufforderung.
 - Synchronisierung erfolgt mit HTTP-Abfragen alle 2,5 Sekunden. Das ist kein Firebase-`onValue` und kein WebSocket. Der ursprüngliche Firebase-Testpfad benutzt weiter `onValue`.
 - Serverzeit bestimmt Phasen, Belohnungen und Fangfristen. Abgelaufene Phasen werden auch bei einem Lesezugriff anhand der ursprünglichen Fristen nachgeholt, wenn der Host gerade offline ist.

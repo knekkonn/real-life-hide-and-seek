@@ -186,14 +186,14 @@ async function restoreSession() {
   }
   try {
     const room = await getRoom(saved.code);
-    if (!room || ['closed'].includes(room.phase) || (room.phase !== 'pending' && (!room.players?.[saved.uid] || room.players[saved.uid].status === 'left'))) {
+    if (!room || room.phase === 'closed' || !room.players?.[saved.uid] || room.players[saved.uid].status === 'left') {
       localStorage.removeItem(SESSION_KEY);
       toast('Sitzung beendet', 'Der Raum oder deine Teilnahme ist nicht mehr verfügbar.', 'warn');
       return;
     }
     state.uid = saved.uid; state.playerName = saved.name; state.roomCode = saved.code;
     state.room = room; state.subscriptionStartedAt = now();
-    attachRoomListener(); if (room.phase !== 'pending') { showGameState(); renderAll(); }
+    attachRoomListener(); showGameState(); renderAll();
     toast('Sitzung wiederhergestellt', `Raum ${saved.code}`, 'success');
   } catch (error) { toast('Wiederherstellung wartet', error.message, 'warn'); }
 }
@@ -262,7 +262,7 @@ async function joinLobby() {
     persistSession();
     attachRoomListener();
     if (getBackendMode() !== 'worker') showGameState();
-    toast(getBackendMode() === 'worker' ? 'Beitritt angefragt' : 'Verbunden', getBackendMode() === 'worker' ? 'Der Host muss deinen Beitritt bestätigen.' : `Du bist dem Raum ${code} beigetreten.`, 'info');
+    toast('Verbunden', `Du bist dem Raum ${code} beigetreten.`, 'success');
     Sound.success();
   } catch (error) {
     console.error(error);
@@ -281,9 +281,7 @@ function attachRoomListener() {
       localExit();
       return;
     }
-    if (room.phase === 'pending') { state.room=room; $('pendingStatus').classList.remove('hidden'); $('createRoomBtn').disabled=true; $('joinRoomBtn').disabled=true; $('entryScreen').classList.remove('hidden'); $('lobbyScreen').classList.add('hidden'); $('gameScreen').classList.add('hidden'); $('leaveBtn').classList.remove('hidden'); return; }
     if (!room.players?.[state.uid] || room.players[state.uid].status === 'left') { localExit(); return; }
-    $('pendingStatus').classList.add('hidden');
     const priorPhase = state.room?.phase;
     const priorRole = state.room?.players?.[state.uid]?.role;
     state.room = room;
@@ -357,9 +355,6 @@ function saveCenter(center) { saveSettings({ center }); }
 
 function renderLobby() {
   const room = state.room;
-  const requests = $('joinRequests');
-  requests.innerHTML = isHost() ? Object.entries(room.joinRequests || {}).map(([id,request]) => `<p>${escapeHTML(request.name)} möchte beitreten. <button class="button button-secondary" data-approve="${escapeHTML(id)}">Zulassen</button></p>`).join('') : '';
-  requests.querySelectorAll('[data-approve]').forEach((button) => button.addEventListener('click', async () => { try { button.disabled=true; await workerCommand(state.roomCode,'approveJoin',{targetId:button.dataset.approve}); } catch (error) { button.disabled=false; toast('Beitritt abgewiesen',error.message,'warn'); } }));
   $('lobbyRoomCode').textContent = room.code || state.roomCode;
   $('hostBadge').classList.toggle('hidden', !isHost());
   $('hostSettings').classList.toggle('hidden', !isHost());
@@ -711,7 +706,7 @@ function localExit() {
   releaseRoundPhotos();
   state.roomCode = null; state.room = null; state.ownLocation = null;
   state.lastTracksRoundId=null; clearRoundTracks();
-  $('pendingStatus').classList.add('hidden'); $('createRoomBtn').disabled=false; $('joinRoomBtn').disabled=false;
+  $('createRoomBtn').disabled=false; $('joinRoomBtn').disabled=false;
   resetMap(); resetLobbyMap(); state.zone = null;
   state.lastAnnouncementId = null; state.lastSeekerSideAnnouncementId = null; state.seenCatchRequest = null;
   Sound.stopTension(); closeModal(); showGameState();
