@@ -1,8 +1,8 @@
 // Bump this identifier whenever any shell file changes. One worker serves one complete shell.
-const CACHE_NAME = 'hide-seek-shell-v2.4.3';
+const CACHE_NAME = 'hide-seek-shell-v2.4.5';
 const APP_SHELL = [
   './', './index.html', './styles.css', './manifest.webmanifest', './assets/icon.svg',
-  './js/config.js', './js/backend.js', './js/skills.js', './js/utils.js', './js/gps.js', './js/transactions.js', './js/store.js', './js/map.js', './js/game-service.js', './js/main.js'
+  './js/config.js', './js/backend.js', './js/skills.js', './js/utils.js', './js/gps.js', './js/photos.js', './js/transactions.js', './js/store.js', './js/map.js', './js/game-service.js', './js/main.js'
 ];
 self.addEventListener('install', (event) => {
   event.waitUntil(Promise.all([

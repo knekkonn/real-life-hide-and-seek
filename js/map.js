@@ -14,6 +14,9 @@ let roundTrackMap = null;
 let roundTrackLayers = [];
 let roundTrackFrame = null;
 let roundTrackSignature = '';
+let mapPlacementHandler = null;
+let mapPlacementBanner = null;
+let focusedTaskTarget = '';
 const TRACK_COLORS = ['#49d7ff','#ff718d','#c9ff54','#b88cff','#ffbe5c','#62e6bc','#ff78d4','#89a9ff','#e8ec73','#ff9468'];
 const OSM_TILES = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
 
@@ -51,26 +54,61 @@ export function centerMap(location) {
   if (map && location && Number.isFinite(location.lat) && Number.isFinite(location.lng)) map.setView([location.lat, location.lng], Math.max(map.getZoom(), 15), { animate:true });
 }
 
-function putMarker(id, point, kind, label, detail='') {
+export function beginMapPlacement(onSelect) {
+  const target=map || initMap();
+  if(!target || typeof onSelect!=='function') return false;
+  cancelMapPlacement();
+  mapPlacementHandler=onSelect;
+  const container=target.getContainer();
+  container.classList.add('map-placement-active');
+  mapPlacementBanner=document.createElement('div');
+  mapPlacementBanner.className='map-placement-banner';
+  const hint=document.createElement('span'); hint.textContent='Tippe oder klicke auf den gewünschten Ort';
+  const cancel=document.createElement('button'); cancel.type='button'; cancel.className='button button-secondary'; cancel.textContent='Abbrechen';
+  cancel.addEventListener('click',(event)=>{event.stopPropagation();cancelMapPlacement();});
+  mapPlacementBanner.append(hint,cancel);
+  L.DomEvent.disableClickPropagation(mapPlacementBanner);
+  container.appendChild(mapPlacementBanner);
+  target.on('click',handleMapPlacementClick);
+  return true;
+}
+
+export function cancelMapPlacement() {
+  if(map) map.off('click',handleMapPlacementClick);
+  map?.getContainer().classList.remove('map-placement-active');
+  mapPlacementBanner?.remove(); mapPlacementBanner=null; mapPlacementHandler=null;
+}
+
+function handleMapPlacementClick(event) {
+  if(!mapPlacementHandler || !Number.isFinite(event.latlng?.lat) || !Number.isFinite(event.latlng?.lng)) return;
+  const callback=mapPlacementHandler,point={lat:event.latlng.lat,lng:event.latlng.lng};
+  cancelMapPlacement();
+  Promise.resolve().then(()=>callback(point)).catch(error=>console.error('Map placement failed',error));
+}
+
+function putMarker(id, point, kind, label, detail='', showPopup=true) {
   if (!map || !point || !Number.isFinite(point.lat) || !Number.isFinite(point.lng)) return;
   const existing = mapMarkers.get(id);
   label = escapeHTML(label || '');
-  const popupHtml = label ? `<strong>${label}</strong>${detail ? `<br>${escapeHTML(detail)}` : ''}` : '';
+  const popupHtml = showPopup && label ? `<strong>${label}</strong>${detail ? `<br>${escapeHTML(detail)}` : ''}` : '';
   if (existing) {
     existing.setLatLng([point.lat, point.lng]);
     if (existing._hideSeekKind !== kind) {
       existing.setIcon(markerIcon(kind));
       existing._hideSeekKind = kind;
     }
-    if (label && existing._hideSeekPopup !== popupHtml) {
+    if (showPopup && label && existing._hideSeekPopup !== popupHtml) {
       existing.bindPopup(popupHtml);
       existing._hideSeekPopup = popupHtml;
+    } else if (!showPopup && existing._hideSeekPopup) {
+      existing.unbindPopup();
+      existing._hideSeekPopup = '';
     }
   } else {
     const marker = L.marker([point.lat, point.lng], { icon:markerIcon(kind), keyboard:false }).addTo(map);
     marker._hideSeekKind = kind;
     marker._hideSeekPopup = popupHtml;
-    if (label) marker.bindPopup(popupHtml);
+    if (popupHtml) marker.bindPopup(popupHtml);
     mapMarkers.set(id, marker);
   }
 }
@@ -96,7 +134,11 @@ export function updateMap(room, selfId, ownLocation, role, gpsSyncStatus='idle')
   if (['visit','scan'].includes(self?.activeTask?.kind) && !self.activeTask.failed && !self.activeTask.completed && self.activeTask.targetLocation && ['hide','playing'].includes(room.phase)) {
     const id = `task-target:${selfId}`;
     allowed.add(id);
-    putMarker(id, self.activeTask.targetLocation, 'cache', 'Geheimer Feldzielpunkt', 'Nur für dich sichtbar · Nähe erforderlich');
+    putMarker(id, self.activeTask.targetLocation, 'task-target', 'Geheimer Feldzielpunkt', '', false);
+    const focusKey=`${id}:${self.activeTask.id}`;
+    if(focusedTaskTarget!==focusKey) { focusedTaskTarget=focusKey; map.setView([self.activeTask.targetLocation.lat,self.activeTask.targetLocation.lng],Math.max(map.getZoom(),16),{animate:true}); }
+  } else {
+    focusedTaskTarget='';
   }
   if (ownLocation) {
     allowed.add(`player:${selfId}`);
@@ -187,6 +229,7 @@ export function updateMap(room, selfId, ownLocation, role, gpsSyncStatus='idle')
 
 export function resetMap() {
   if (!map) return;
+  cancelMapPlacement();
   for (const marker of mapMarkers.values()) map.removeLayer(marker);
   mapMarkers.clear();
   if (radiusCircle) map.removeLayer(radiusCircle);

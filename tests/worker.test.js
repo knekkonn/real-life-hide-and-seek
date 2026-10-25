@@ -116,17 +116,20 @@ test('skill prices and active ranges follow strength and playzone scale', () => 
   assert.ok(wide.sweepRadius>compact.sweepRadius);
   assert.ok(skillTuning('shield',1000).price>skillTuning('sprint',1000).price,'stronger effects cost more');
 });
-test('catch requires fresh accurate positions within the allowed radius', async () => {
+test('catch accepts fresh GPS fixes within the accuracy-adjusted range', async () => {
   const room=playing();
-  room.players.guest.location={lat:.00005,lng:0,accuracy:5,measuredAt:Date.now()};room.players.guest.locationAt=Date.now();
+  room.players.guest.location={lat:.0002,lng:0,accuracy:5,measuredAt:Date.now()};room.players.guest.locationAt=Date.now();
   await assert.rejects(applyAction(room,'host',{action:'requestCatch',targetId:'guest'}),/CATCH_RANGE_REQUIRED/);
   assert.equal(room.players.guest.role,'hider');
   const close=playing();close.settings.mode='infected';close.players.guest.location={lat:.00004,lng:0,accuracy:5,measuredAt:Date.now()};close.players.guest.locationAt=Date.now();
   await applyAction(close,'host',{action:'requestCatch',targetId:'guest'});
-  assert.equal(close.players.guest.role,'seeker','a GPS distance below 5 m is accepted');
-  const outside=playing();outside.players.guest.location={lat:.00006,lng:0,accuracy:5,measuredAt:Date.now()};outside.players.guest.locationAt=Date.now();
+  assert.equal(close.players.guest.role,'seeker','a GPS distance within the accuracy-adjusted range is accepted');
+  const laptop=playing();laptop.settings.mode='infected';laptop.players.host.location={lat:0,lng:0,accuracy:45,measuredAt:Date.now()};laptop.players.host.locationAt=Date.now();laptop.players.guest.location={lat:.0002,lng:0,accuracy:50,measuredAt:Date.now()};laptop.players.guest.locationAt=Date.now();
+  await applyAction(laptop,'host',{action:'requestCatch',targetId:'guest'});
+  assert.equal(laptop.players.guest.role,'seeker','moderate laptop GPS drift is supported when the players are close');
+  const outside=playing();outside.players.guest.location={lat:.0004,lng:0,accuracy:5,measuredAt:Date.now()};outside.players.guest.locationAt=Date.now();
   await assert.rejects(applyAction(outside,'host',{action:'requestCatch',targetId:'guest'}),/CATCH_RANGE_REQUIRED/);
-  room.players.guest.location={lat:0,lng:0,accuracy:45,measuredAt:Date.now()};room.players.guest.locationAt=Date.now();
+  room.players.guest.location={lat:0,lng:0,accuracy:70,measuredAt:Date.now()};room.players.guest.locationAt=Date.now();
   await assert.rejects(applyAction(room,'host',{action:'requestCatch',targetId:'guest'}),/FRESH_GPS_REQUIRED/);
 });
 
@@ -164,18 +167,19 @@ test('forged reward submissions cannot award currency', async () => {
   await assert.rejects(applyAction(room,'guest',{action:'completeTask',kind:'code',proof:{id:'forged',answer:42}}),/INVALID_CHALLENGE/);
   assert.equal(room.players.guest.coins,before);
 });
-test('server-issued Vigenere cipher is guided, private, rate-limited and redeemable once', async () => {
+test('server-issued casual logic code is unique, private, rate-limited and redeemable once', async () => {
   const room=playing(); const timestamp=Date.now();
   const {result}=await applyAction(room,'guest',{action:'beginTask',kind:'cipher'},timestamp);
   const challenge=room.players.guest.activeTask;
-  assert.match(result.prompt,/Vigenère/);
-  assert.match(result.prompt,/Ziehe an jeder Stelle/);
-  assert.match(result.prompt,/Beispiel: C minus B ergibt B/);
-  assert.doesNotMatch(result.prompt,/Spaltentransposition/);
-  const key=result.prompt.match(/Schlüssel: ([A-Z]{3})/)[1];
-  const ciphertext=result.prompt.match(/VERSCHLÜSSELTER TEXT: ([A-Z]{6})/)[1];
-  const decoded=Array.from(ciphertext,(char,i)=>String.fromCharCode(65+(char.charCodeAt(0)-65-(key.charCodeAt(i%key.length)-65)+26)%26)).join('');
-  assert.equal(decoded,challenge.answer,'published instructions must decode the server-held code');
+  assert.match(result.prompt,/3-stelligen Code/);
+  assert.match(result.prompt,/richtig platziert/);
+  assert.doesNotMatch(result.prompt,/Vigenère|KRYPTANALYSE/);
+  const clues=[...result.prompt.matchAll(/([0-9]{3}) → ([0-3]) richtig platziert · ([0-3]) an anderer Stelle/g)].map(match=>({guess:match[1],exact:Number(match[2]),misplaced:Number(match[3])}));
+  assert.ok(clues.length>=5);
+  const codes=[];for(let a=0;a<10;a++)for(let b=0;b<10;b++)for(let c=0;c<10;c++)if(a!==b&&a!==c&&b!==c)codes.push(`${a}${b}${c}`);
+  const feedback=(code,guess)=>{let exact=0,present=0;for(let i=0;i<3;i++){if(code[i]===guess[i])exact++;if(code.includes(guess[i]))present++;}return {exact,misplaced:present-exact};};
+  const solutions=codes.filter(code=>clues.every(clue=>{const score=feedback(code,clue.guess);return score.exact===clue.exact&&score.misplaced===clue.misplaced;}));
+  assert.deepEqual(solutions,[challenge.answer],'the casual clues identify exactly the private server code');
   assert.equal(result.expiresAt-timestamp,150000);
   assert.equal(publicRoom(room,'guest',timestamp).players.guest.activeTask.answer,undefined);
   assert.equal(publicRoom(room,'host',timestamp).players.guest.activeTask,undefined);
@@ -187,7 +191,7 @@ test('server-issued Vigenere cipher is guided, private, rate-limited and redeema
   const successRoom=playing();
   const started=await applyAction(successRoom,'guest',{action:'beginTask',kind:'cipher'},timestamp);
   const answer=successRoom.players.guest.activeTask.answer;
-  const reward=await applyAction(successRoom,'guest',{action:'completeTask',proof:{id:started.result.id,answer}},timestamp+31000);
+  const reward=await applyAction(successRoom,'guest',{action:'completeTask',proof:{id:started.result.id,answer}},timestamp+11000);
   assert.equal(reward.result,true);
   assert.equal(successRoom.players.guest.coins,25);
   await assert.rejects(applyAction(successRoom,'guest',{action:'completeTask',proof:{id:started.result.id,answer}},timestamp+32000),/INVALID_CHALLENGE/);
@@ -233,6 +237,19 @@ test('visit tasks select private in-zone targets and movement failures trigger c
   const failed=await applyAction(room,'guest',{action:'completeTask',proof:{id:result.id}},timestamp+1000);
   assert.equal(failed.result.error,'TASK_LOCATION_REQUIRED');
   assert.equal(room.players.guest.taskCooldownUntil,timestamp+121000);
+});
+
+test('visit target is completed automatically by a fresh GPS arrival without a click', async () => {
+  const room=playing(); const timestamp=Date.now(); room.objectives={one:{id:'one',location:{lat:.001,lng:0}}};
+  const {result:challenge}=await applyAction(room,'guest',{action:'beginTask',kind:'visit'},timestamp);
+  const before=room.players.guest.coins;
+  await applyAction(room,'guest',{action:'updatePlayerLocation',location:{lat:.001,lng:0,accuracy:5,measuredAt:timestamp+1000}},timestamp+1000);
+  assert.equal(room.players.guest.activeTask.completed,true);
+  assert.equal(room.players.guest.activeTask.id,challenge.id);
+  assert.equal(room.players.guest.coins,before+25);
+  assert.equal(room.players.guest.tasksSolved,1);
+  await applyAction(room,'guest',{action:'updatePlayerLocation',location:{lat:.001,lng:0,accuracy:5,measuredAt:timestamp+2000}},timestamp+2000);
+  assert.equal(room.players.guest.coins,before+25,'repeated GPS updates cannot duplicate the reward');
 });
 
 test('stay tasks fail when the player leaves the registered hiding point', async () => {
