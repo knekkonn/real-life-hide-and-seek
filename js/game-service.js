@@ -1,6 +1,6 @@
 import { validPoint } from './gps.js';
 import { mutateRoom, remoteAction } from './store.js';
-import { DEFAULT_SETTINGS, SKILLS, eligibleSkills, SKILL_IDS, skillTuning } from './skills.js';
+import { DEFAULT_SETTINGS, SKILLS, eligibleSkills, SKILL_IDS, skillTuning, tacticalTuning } from './skills.js';
 import { now, randomId, randomFrom, distanceMeters, clamp } from './utils.js';
 
 export function createRoomData(hostId, hostName) {
@@ -103,6 +103,7 @@ export function startCountdown(room, uid, hostLocation) {
   room.matchEndsAt = null;
   room.pendingCatch = null;
   room.itemBoxes = {};
+  room.restrictedZones = {};
   room.traps = {};
   room.decoys = {};
   room.effects = {};
@@ -162,32 +163,34 @@ export async function maybePayTimeReward(code, uid) {
 export async function updatePlayerLocation(code, uid, location) {
   const remote = remoteAction('updatePlayerLocation', [code, uid, location]);
   if (remote) return remote;
+  const timestamp=Number.isFinite(code?.timestamp)?code.timestamp:now();
   return mutateRoom(code, (room) => {
     const player = room.players?.[uid];
     if (!player || !player.active) return null;
-    if (!validPoint(location) || !Number.isFinite(location.accuracy) || location.accuracy <= 0 || !Number.isFinite(location.measuredAt) || now() - location.measuredAt > 10000 || location.measuredAt > now() + 2000) return null;
+    if (!validPoint(location) || !Number.isFinite(location.accuracy) || location.accuracy <= 0 || !Number.isFinite(location.measuredAt) || timestamp - location.measuredAt > 10000 || location.measuredAt > timestamp + 2000) return null;
     player.location = { lat:location.lat, lng:location.lng, accuracy:location.accuracy, measuredAt:location.measuredAt, ...(Number.isFinite(location.altitude) && location.altitude >= -500 && location.altitude <= 10000 ? {altitude:location.altitude} : {}) };
     if (room.phase==='playing' && player.role==='hider' && player.active) {
       const prior=player._stayAnchor;
-      if (!prior || now()-(prior.lastAt||prior.at||0)>15000 || distanceMeters(prior.point,player.location)>12) {
-        if (prior?.at) player.longestStaySeconds=Math.max(Number(player.longestStaySeconds)||0,Math.floor(Math.max(0,(Math.min(now(),(prior.lastAt||prior.at)+15000,room.matchEndsAt||now())-prior.at)/1000)));
-        player._stayAnchor={point:{lat:player.location.lat,lng:player.location.lng},at:now(),lastAt:now()};
-        player.stationarySince=now();
-      } else prior.lastAt=now();
+      if (!prior || timestamp-(prior.lastAt||prior.at||0)>15000 || distanceMeters(prior.point,player.location)>12) {
+        if (prior?.at) player.longestStaySeconds=Math.max(Number(player.longestStaySeconds)||0,Math.floor(Math.max(0,(Math.min(timestamp,(prior.lastAt||prior.at)+15000,room.matchEndsAt||timestamp)-prior.at)/1000)));
+        player._stayAnchor={point:{lat:player.location.lat,lng:player.location.lng},at:timestamp,lastAt:timestamp};
+        player.stationarySince=timestamp;
+      } else prior.lastAt=timestamp;
     }
-    player.locationAt = now();
+    player.locationAt = timestamp;
+    settleCloseCall(room,timestamp);
     if (!room.settings.center && room.hostId === uid && location.accuracy <= 50) {
       room.settings.center = { lat:player.location.lat, lng:player.location.lng };
     }
     // Traps are resolved transactionally so a seeker's device cannot trigger the same trap twice.
-    if (room.phase === 'playing' && player.role === 'seeker' && (player.effects?.frozenUntil || 0) < now()) {
+    if (room.phase === 'playing' && player.role === 'seeker' && (player.effects?.frozenUntil || 0) < timestamp) {
       for (const trap of Object.values(room.traps || {})) {
-        if (trap.triggeredBy || (trap.expiresAt || 0) <= now()) continue;
+        if (trap.triggeredBy || (trap.expiresAt || 0) <= timestamp) continue;
         if (distanceMeters(player.location, trap.location) <= (trap.radius || 25)) {
           trap.triggeredBy = uid;
           player.effects ||= {};
-          player.effects.frozenUntil = now() + 15_000;
-          room.announcement = { id:randomId('announcement'), type:'private', targetId:uid, title:'EMP TRAP TRIGGERED', message:'Dein Bildschirm ist 15 Sekunden blockiert.', createdAt:now() };
+          player.effects.frozenUntil = timestamp + 15_000;
+          room.announcement = { id:randomId('announcement'), type:'private', targetId:uid, title:'EMP TRAP TRIGGERED', message:'Dein Bildschirm ist 15 Sekunden blockiert.', createdAt:timestamp };
           break;
         }
       }
@@ -235,6 +238,7 @@ export async function respondToCatch(code, targetId, accepted, requestId=null) {
       room.announcementForSeeker = { id:randomId('announcement'), targetId:request.seekerId, title:'SHIELD BLOCKED', message:`${target.name} hat einen Schild eingesetzt.`, createdAt:timestamp };
       return room;
     }
+    delete target.effects.closecall;
     if (room.settings.mode === 'infected') {
       target.role = 'seeker';
       target.status = 'infected';
@@ -265,6 +269,30 @@ export async function respondToCatch(code, targetId, accepted, requestId=null) {
 
 function freshCatchLocation(player,timestamp) {
   return Boolean(player.location && timestamp-(player.locationAt||0)<=15000 && timestamp>=player.locationAt && Number(player.location.accuracy)<=60);
+}
+function freshPreciseLocation(player,timestamp) {
+  return Boolean(player?.location && timestamp>=(player.locationAt||0) && timestamp-(player.locationAt||0)<=10000 && Number(player.location.accuracy)<=25);
+}
+function settleCloseCall(room,timestamp) {
+  for(const hider of Object.values(room.players||{})) {
+    const challenge=hider.effects?.closecall;
+    if(!challenge || hider.role!=='hider' || !hider.active) continue;
+    if(timestamp>challenge.expiresAt) {
+      delete hider.effects.closecall;
+      room.announcement={id:randomId('announcement'),type:'private',targetId:hider.id,title:'CLOSE_CALL_EXPIRED',message:'Die Mutprobe ist abgelaufen. Es wurden keine Punkte vergeben.',createdAt:timestamp};
+      continue;
+    }
+    const near=freshPreciseLocation(hider,timestamp) && Object.values(room.players||{}).some(candidate=>candidate.active&&candidate.role==='seeker'&&freshPreciseLocation(candidate,timestamp)&&distanceMeters(hider.location,candidate.location)<=challenge.radius);
+    if(!near) { challenge.progressSince=0; challenge.lastProofAt=timestamp; continue; }
+    if(!challenge.progressSince || timestamp-challenge.lastProofAt>12000) challenge.progressSince=timestamp;
+    challenge.lastProofAt=timestamp;
+    if(timestamp-challenge.progressSince>=challenge.duration) {
+      const reward=tacticalTuning(room.settings).closeCallReward;
+      hider.score=(Number(hider.score)||0)+reward;
+      delete hider.effects.closecall;
+      room.announcement={id:randomId('announcement'),type:'private',targetId:hider.id,title:'CLOSE_CALL_REWARDED',message:`Mutprobe geschafft: +${reward} Punkte.`,createdAt:timestamp};
+    }
+  }
 }
 function catchDistanceLimit() { return 8; }
 
@@ -331,6 +359,7 @@ function applyCatch(room,seekerId,targetId,timestamp) {
     room.announcement={id:randomId('announcement'),type:'global',title:'SHIELD ACTIVATED',message:`${target.name} hat den Fang mit einem Schild abgewehrt.`,createdAt:timestamp};
     return true;
   }
+  delete target.effects.closecall;
   if(room.settings.mode==='infected') {
     target.role='seeker'; target.status='infected'; target.active=true;
     const available=eligibleSkills(room.settings,'seeker'); target.inventory=available.length?[randomFrom(available)]:[];
@@ -352,7 +381,7 @@ function applyCatch(room,seekerId,targetId,timestamp) {
 
 export async function buySkill(code, uid, skillId) {
   const remote = remoteAction('buySkill', [code, uid, skillId]);
-  if (remote) return remote;
+  if (remote) return Promise.resolve(remote).then(result=>typeof result==='boolean'?{ok:result,reason:result?'':'Nicht genug Credits oder Fähigkeit aktuell nicht verfügbar.'}:result);
   const skill = SKILLS[skillId];
   if (!skill) return { ok:false, reason:'Unbekannte Fähigkeit.' };
   const result = await mutateRoom(code, (room) => {
@@ -360,7 +389,7 @@ export async function buySkill(code, uid, skillId) {
     if (!player || !player.active || player.role !== skill.side) return null;
     if (room.phase !== 'playing' && !(player.role === 'hider' && room.phase === 'hide')) return null;
     if (room.settings.skills?.[skillId] === false) return null;
-    const tuning=skillTuning(skillId,room.settings.radius);
+    const tuning=skillTuning(skillId,room.settings);
     if ((Number(player.coins) || 0) < tuning.price) return null;
     player.coins -= tuning.price;
     player.inventory ||= [];
@@ -374,7 +403,7 @@ export async function buySkill(code, uid, skillId) {
 
 export async function activateSkill(code, uid, skillId, params={}) {
   const remote = remoteAction('activateSkill', [code, uid, skillId, params]);
-  if (remote) return remote;
+  if (remote) return Promise.resolve(remote).then(result=>typeof result==='boolean'?{ok:result,reason:result?'':'Fähigkeit kann gerade nicht eingesetzt werden. Prüfe Rolle, Phase, Inventar und GPS.'}:result);
   const skill = SKILLS[skillId];
   if (!skill) return { ok:false, reason:'Unbekannte Fähigkeit.' };
   const result = await mutateRoom(code, (room) => {
@@ -385,7 +414,7 @@ export async function activateSkill(code, uid, skillId, params={}) {
     const inventoryIndex = (player.inventory || []).indexOf(skillId);
     if (inventoryIndex < 0) return null;
     const timestamp = now();
-    const tuning=skillTuning(skillId,room.settings.radius);
+    const tuning=skillTuning(skillId,room.settings);
     if (skillId==='decoy' && !params.location && !player.location) return null;
     if (skillId==='trap' && !player.location) return null;
     if (inventoryIndex >= 0) player.inventory.splice(inventoryIndex, 1);
@@ -429,6 +458,11 @@ export async function activateSkill(code, uid, skillId, params={}) {
     } else if (skillId === 'shield') player.effects.shield = true;
     else if (skillId === 'seekerradar') player.effects.seekerradarUntil = expiry(tuning.duration);
     else if (skillId === 'silent') player.effects.silentUntil = expiry(tuning.duration);
+    else if (skillId === 'closecall') {
+      const nearSeeker=Object.values(room.players||{}).some(candidate=>candidate.active&&candidate.role==='seeker'&&freshPreciseLocation(candidate,timestamp)&&distanceMeters(player.location,candidate.location)<=20);
+      if(player.role!=='hider' || room.phase!=='playing' || player.effects.closecall || !freshPreciseLocation(player,timestamp) || !nearSeeker) return null;
+      player.effects.closecall={startedAt:timestamp,progressSince:timestamp,lastProofAt:timestamp,expiresAt:timestamp+90000,duration:tuning.duration*1000,radius:20};
+    }
     player.skillsUsed=(Number(player.skillsUsed)||0)+1;
     room.announcement = { id:randomId('announcement'), type:'private', targetId:uid, title:'SKILL ACTIVATED', message:`${skill.short} eingesetzt.`, createdAt:timestamp };
     return room;
@@ -439,7 +473,7 @@ export async function activateSkill(code, uid, skillId, params={}) {
 
 export async function collectItemBox(code, uid, boxId) {
   const remote = remoteAction('collectItemBox', [code, uid, boxId]);
-  if (remote) return remote;
+  if (remote) return Promise.resolve(remote).then(result=>typeof result==='boolean'?{ok:result,reason:result?'':'Der Cache ist nicht mehr verfügbar oder GPS ist zu ungenau.'}:result);
   const result = await mutateRoom(code, (room) => {
     const player = room.players?.[uid];
     const box = room.itemBoxes?.[boxId];

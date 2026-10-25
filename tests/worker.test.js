@@ -7,7 +7,7 @@ import { applyAction, publicRoom, settlePhases } from '../worker/game.js';
 import { authenticate } from '../worker/auth.js';
 import { createRoomData, addPlayerToRoom, updateSettings } from '../js/game-service.js';
 import { findSafeItemLocations } from '../worker/itembox.js';
-import { skillTuning } from '../js/skills.js';
+import { skillTuning, tacticalTuning } from '../js/skills.js';
 
 function playing() {
   const room=createRoomData('host','HOST'); room.code='1234';
@@ -121,7 +121,88 @@ test('skill prices and active ranges follow strength and playzone scale', () => 
   const compact=skillTuning('sweeper',200), wide=skillTuning('sweeper',1800);
   assert.ok(wide.price>compact.price);
   assert.ok(wide.sweepRadius>compact.sweepRadius);
+  assert.ok(skillTuning('sweeper',{radius:500,gameDuration:1800}).price>skillTuning('sweeper',{radius:500,gameDuration:300}).price,'skill prices scale with match length');
   assert.ok(skillTuning('shield',1000).price>skillTuning('sprint',1000).price,'stronger effects cost more');
+});
+
+test('Hider proximity skill pays server-checked points only after sustained close GPS samples', async () => {
+  const room=playing(),timestamp=Date.now(); room.matchEndsAt=timestamp+600000;
+  room.players.guest.inventory=['closecall'];
+  await applyAction(room,'guest',{action:'activateSkill',skillId:'closecall'},timestamp);
+  assert.ok(room.players.guest.effects.closecall);
+  const update=async(uid,at,lat=0)=>applyAction(room,uid,{action:'updatePlayerLocation',location:{lat,lng:0,accuracy:5,measuredAt:at}},at);
+  await update('guest',timestamp+5000);
+  await update('host',timestamp+10000);
+  await update('guest',timestamp+15000);
+  await update('host',timestamp+20000);
+  assert.equal(room.players.guest.score,tacticalTuning(room.settings).closeCallReward);
+  assert.equal(room.players.guest.effects.closecall,undefined,'the reward is paid once and closes the challenge');
+  assert.equal(publicRoom(room,'other').players.guest.effects,undefined,'proximity progress stays private');
+});
+
+test('Hider proximity progress resets as soon as the Seeker leaves its range', async () => {
+  const room=playing(),timestamp=Date.now(); room.matchEndsAt=timestamp+600000;
+  room.players.guest.inventory=['closecall'];
+  await applyAction(room,'guest',{action:'activateSkill',skillId:'closecall'},timestamp);
+  await applyAction(room,'host',{action:'updatePlayerLocation',location:{lat:.001,lng:0,accuracy:5,measuredAt:timestamp+5000}},timestamp+5000);
+  await applyAction(room,'guest',{action:'updatePlayerLocation',location:{lat:0,lng:0,accuracy:5,measuredAt:timestamp+10000}},timestamp+10000);
+  assert.equal(room.players.guest.effects.closecall.progressSince,0);
+  assert.equal(room.players.guest.score,0);
+});
+
+test('Seeker map restrictions spend dynamic points, display to Hiders, and block entry', async () => {
+  const room=playing(),timestamp=Date.now(),tuning=tacticalTuning(room.settings); room.players.host.score=100;
+  const center={lat:0,lng:.001};
+  await applyAction(room,'host',{action:'useTacticalAbility',ability:'zone',center},timestamp);
+  assert.equal(room.players.host.score,100-tuning.zoneCost);
+  assert.equal(Object.keys(publicRoom(room,'guest',timestamp).restrictedZones).length,1);
+  await assert.rejects(applyAction(room,'guest',{action:'updatePlayerLocation',location:{...center,accuracy:5,measuredAt:timestamp+1000}},timestamp+1000),/RESTRICTED_AREA/);
+  assert.equal(room.players.guest.location.lng,0,'a rejected entry never overwrites the last accepted GPS point');
+});
+
+test('a Hider already inside a restricted circle can leave but cannot later re-enter', async () => {
+  const room=playing(),timestamp=Date.now(),center={lat:0,lng:.001}; room.players.host.score=100;
+  room.players.guest.location={...center,accuracy:5,measuredAt:timestamp}; room.players.guest.locationAt=timestamp;
+  await applyAction(room,'host',{action:'useTacticalAbility',ability:'zone',center},timestamp);
+  await applyAction(room,'guest',{action:'updatePlayerLocation',location:{lat:0,lng:.0011,accuracy:5,measuredAt:timestamp+1000}},timestamp+1000);
+  await applyAction(room,'guest',{action:'updatePlayerLocation',location:{lat:0,lng:.002,accuracy:5,measuredAt:timestamp+2000}},timestamp+2000);
+  await assert.rejects(applyAction(room,'guest',{action:'updatePlayerLocation',location:{...center,accuracy:5,measuredAt:timestamp+3000}},timestamp+3000),/RESTRICTED_AREA/);
+});
+
+test('Seeker relocation requires each target to move the map-scaled minimum distance', async () => {
+  const room=playing(),timestamp=Date.now(),tuning=tacticalTuning(room.settings); room.players.host.score=150;
+  await applyAction(room,'host',{action:'useTacticalAbility',ability:'relocate',mode:'one',targetId:'guest'},timestamp);
+  assert.equal(room.players.host.score,150-tuning.relocationCost('one'));
+  assert.equal(room.players.guest.forcedRelocation.minimumMeters,tuning.relocateDistance);
+  assert.equal(publicRoom(room,'guest',timestamp).players.guest.forcedRelocation.minimumMeters,tuning.relocateDistance);
+  assert.equal(publicRoom(room,'host',timestamp).players.guest.forcedRelocation,undefined,'the old position is private to its owner');
+  await assert.rejects(applyAction(room,'guest',{action:'beginTask',kind:'cipher'},timestamp+1000),/RELOCATION_REQUIRED/);
+  const moved={lat:.0008,lng:0,accuracy:5,measuredAt:timestamp+2000};
+  await applyAction(room,'guest',{action:'updatePlayerLocation',location:moved},timestamp+2000);
+  assert.equal(room.players.guest.forcedRelocation,null,'the server clears the requirement after the minimum distance');
+});
+
+test('Seeker relocation supports a random target and the whole Hider team', async () => {
+  const randomRoom=playing(),randomTimestamp=Math.max(Date.now(),randomRoom.players.host.locationAt); randomRoom.players.host.score=200;
+  await applyAction(randomRoom,'host',{action:'useTacticalAbility',ability:'relocate',mode:'random'},randomTimestamp);
+  assert.equal(Object.values(randomRoom.players).filter(player=>player.forcedRelocation).length,1);
+  const teamRoom=playing(),teamTimestamp=Math.max(Date.now(),teamRoom.players.host.locationAt); teamRoom.players.host.score=250;
+  const teamCost=tacticalTuning(teamRoom.settings).relocationCost('all',2);
+  await applyAction(teamRoom,'host',{action:'useTacticalAbility',ability:'relocate',mode:'all'},teamTimestamp);
+  assert.equal(Object.values(teamRoom.players).filter(player=>player.forcedRelocation).length,2);
+  assert.equal(teamRoom.players.host.score,250-teamCost);
+});
+
+test('Seeker can trade time for points without shortening a round below five minutes', async () => {
+  const room=playing(),timestamp=Date.now(),tuning=tacticalTuning(room.settings); room.matchEndsAt=timestamp+600000;
+  await applyAction(room,'host',{action:'useTacticalAbility',ability:'exchangeTime',seconds:60},timestamp);
+  assert.equal(room.matchEndsAt,timestamp+540000);
+  assert.equal(room.players.host.score,tuning.exchangeReward(60));
+  await assert.rejects(applyAction(room,'host',{action:'useTacticalAbility',ability:'exchangeTime',seconds:30},timestamp+1000),/ABILITY_COOLDOWN/);
+  room.players.host.tacticalCooldowns.exchange=timestamp;
+  room.matchEndsAt=timestamp+320000;
+  await assert.rejects(applyAction(room,'host',{action:'useTacticalAbility',ability:'exchangeTime',seconds:30},timestamp+16000),/MINIMUM_GAME_TIME/);
+  assert.equal(room.matchEndsAt,timestamp+320000,'a rejected exchange leaves the deadline intact');
 });
 test('catch enforces a hard maximum distance of eight meters', async () => {
   const room=playing();
@@ -204,6 +285,32 @@ test('server-issued casual logic code is unique, private, rate-limited and redee
   assert.equal(reward.result,true);
   assert.equal(successRoom.players.guest.coins,25);
   await assert.rejects(applyAction(successRoom,'guest',{action:'completeTask',proof:{id:started.result.id,answer}},timestamp+32000),/INVALID_CHALLENGE/);
+});
+
+test('the code task allows three server-checked guesses before applying its cooldown', async () => {
+  const room=playing(),timestamp=Date.now();
+  const {result:challenge}=await applyAction(room,'guest',{action:'beginTask',kind:'cipher'},timestamp);
+  assert.equal(room.players.guest.activeTask.attemptsLeft,3);
+  for(let attempt=1;attempt<=3;attempt++) {
+    const at=timestamp+10000+attempt*1000;
+    const rejected=await applyAction(room,'guest',{action:'completeTask',proof:{id:challenge.id,answer:'000'}},at);
+    const attemptsRemaining=3-attempt;
+    assert.equal(rejected.result.error,'WRONG_ANSWER');
+    assert.equal(rejected.result.attemptsRemaining,attemptsRemaining);
+    assert.equal(room.players.guest.activeTask.failed,attempt===3);
+    assert.equal(room.players.guest.taskCooldownUntil||0,attempt===3?at+120000:0);
+  }
+});
+
+test('a correct code still succeeds after one wrong guess', async () => {
+  const room=playing(),timestamp=Date.now();
+  const {result:challenge}=await applyAction(room,'guest',{action:'beginTask',kind:'cipher'},timestamp);
+  const wrong=await applyAction(room,'guest',{action:'completeTask',proof:{id:challenge.id,answer:'000'}},timestamp+11000);
+  assert.equal(wrong.result.attemptsRemaining,2);
+  const answer=room.players.guest.activeTask.answer;
+  const solved=await applyAction(room,'guest',{action:'completeTask',proof:{id:challenge.id,answer}},timestamp+12000);
+  assert.equal(solved.result,true);
+  assert.equal(room.players.guest.coins,25);
 });
 
 test('all GPS task thresholds stay at or below ten meters', async () => {
@@ -336,12 +443,13 @@ test('new round resets player locations and tracks and last departure clears all
   const room=playing(); room.phase='finished';room.players.guest.location={lat:1,lng:1};room.photoMetadata={guest:{image:'private'}};room.roundTracks={guest:{points:[[1,1],[1.1,1.1]]}};
   await applyAction(room,'host',{action:'newRound'});
   assert.equal(room.phase,'lobby');assert.equal(room.players.guest.role,'waiting');assert.equal(room.players.guest.location,null);assert.deepEqual(room.photoMetadata,{});assert.deepEqual(room.roundTracks,{});
+  room.restrictedZones={test:{id:'test',center:{lat:0,lng:0},radius:30,expiresAt:Date.now()+60000}};
   await applyAction(room,'host',{action:'leaveRoom'});
   assert.equal(Object.keys(room.players).length,3,'remaining player data is retained until the room is empty');
   await applyAction(room,'guest',{action:'leaveRoom'});
   assert.equal(Object.keys(room.players).length,3,'player records are cleared only after every player has left');
   await applyAction(room,'other',{action:'leaveRoom'});
-  assert.equal(room.phase,'closed');assert.deepEqual(room.players,{});assert.deepEqual(room.photoMetadata,{});assert.deepEqual(room.roundTracks,{});assert.equal(room.hostId,null);assert.equal(room.settings.center,null);
+  assert.equal(room.phase,'closed');assert.deepEqual(room.players,{});assert.deepEqual(room.photoMetadata,{});assert.deepEqual(room.roundTracks,{});assert.deepEqual(room.restrictedZones,{});assert.equal(room.hostId,null);assert.equal(room.settings.center,null);
 });
 test('a host leaving an active round transfers control and is not restored next round', async () => {
   const room=playing(); room.phase='finished';

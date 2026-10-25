@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createSkillLabSession, setSkillLabRadius, queueSkillLabPlacement, activateSkillLabSkill, moveSkillLabTarget, attemptSkillLabCatch, skillLabSnapshot } from '../js/skill-lab.js';
+import { createSkillLabSession, setSkillLabRadius, queueSkillLabPlacement, activateSkillLabSkill, activateSkillLabTactical, moveSkillLabTarget, attemptSkillLabCatch, skillLabSnapshot } from '../js/skill-lab.js';
+import { tacticalTuning } from '../js/skills.js';
 
 test('practice sessions grant only the selected role skills and reset inventory locally', () => {
   const seeker=createSkillLabSession('seeker',500);
@@ -63,4 +64,25 @@ test('training catch enforces 8 m and the shield blocks one valid catch', () => 
   assert.equal(blocked.blocked,true);
   assert.equal(hider.effects.shield,false);
   assert.equal(attemptSkillLabCatch(hider).caught,true);
+});
+
+test('practice Hider Mutprobe requires proximity and awards the same scaled points', () => {
+  const hider=createSkillLabSession('hider',500),timestamp=Date.now();
+  moveSkillLabTarget(hider,15);
+  assert.equal(activateSkillLabSkill(hider,'closecall').ok,true);
+  let snapshot;
+  for(let elapsed=5000;elapsed<=20_000;elapsed+=5000) snapshot=skillLabSnapshot(hider,timestamp+elapsed);
+  assert.equal(snapshot.score,120+tacticalTuning({radius:500}).closeCallReward);
+  assert.equal(hider.effects.closecall,undefined);
+});
+
+test('practice Seeker strategic powers spend points and use scaled values', () => {
+  const seeker=createSkillLabSession('seeker',1000),tuning=tacticalTuning({radius:1000});
+  assert.equal(activateSkillLabTactical(seeker,'zone',{x:57,y:50}).ok,true);
+  assert.equal(seeker.score,120-tuning.zoneCost);
+  assert.equal(skillLabSnapshot(seeker).restrictedZones.length,1);
+  assert.equal(activateSkillLabTactical(seeker,'exchangeTime',{seconds:30}).ok,true);
+  assert.equal(seeker.score,120-tuning.zoneCost+tuning.exchangeReward(30));
+  assert.equal(activateSkillLabTactical(seeker,'relocate',{mode:'random'}).ok,true);
+  assert.equal(skillLabSnapshot(seeker).forcedHiders.length,1);
 });
