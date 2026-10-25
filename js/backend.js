@@ -1,76 +1,52 @@
-import { firebaseConfig, FIREBASE_ENABLED, ROOM_PATH } from './config.js';
+import { configureStore } from './store.js';
+import { normalizeRoom, transactRoom } from './transactions.js';
+import { firebaseConfig, FIREBASE_ENABLED, ROOM_PATH, WORKER_URL } from './config.js';
 import { setServerTimeOffset } from './utils.js';
 
-let backendMode = 'demo';
+let backendMode = 'unavailable';
 let db = null;
 let auth = null;
 let firebaseApi = null;
 let playerUid = null;
-let initialized = false;
-const demoListeners = new Map();
-const DEMO_PREFIX = 'hideseek-room:';
-
-function demoKey(code) { return `${DEMO_PREFIX}${code}`; }
-function readDemoRoom(code) {
-  try {
-    const value = localStorage.getItem(demoKey(code));
-    return value ? JSON.parse(value) : null;
-  } catch { return null; }
-}
-function emitDemoRoom(code, room) {
-  // The custom event notifies same-tab listeners; the storage event notifies other tabs.
-  window.dispatchEvent(new CustomEvent('hideseek-demo-update', { detail: { code } }));
-}
-function structuredCloneSafe(value) {
-  if (value == null) return value;
-  return JSON.parse(JSON.stringify(value));
+let initialization = null;
+export function initBackend() {
+  if (initialization) return initialization;
+  initialization = initializeBackend().catch((error) => {
+    backendMode = 'unavailable';
+    playerUid = null;
+    initialization = null;
+    throw new Error(`Firebase-Verbindung fehlgeschlagen: ${error?.message || 'Unbekannter Fehler'}`);
+  });
+  return initialization;
 }
 
-export async function initBackend() {
-  if (initialized) return { mode: backendMode, uid: playerUid };
-  initialized = true;
-  if (FIREBASE_ENABLED) {
-    try {
-      const [appMod, authMod, dbMod] = await Promise.all([
-        import('https://www.gstatic.com/firebasejs/13.1.0/firebase-app.js'),
-        import('https://www.gstatic.com/firebasejs/13.1.0/firebase-auth.js'),
-        import('https://www.gstatic.com/firebasejs/13.1.0/firebase-database.js')
-      ]);
-      firebaseApi = { ...appMod, ...authMod, ...dbMod };
-      const app = appMod.initializeApp(firebaseConfig);
-      auth = authMod.getAuth(app);
-      db = dbMod.getDatabase(app);
-      dbMod.onValue(dbMod.ref(db, '.info/serverTimeOffset'), (snapshot) => {
-        setServerTimeOffset(Number(snapshot.val()) || 0);
-      });
-      const credential = await authMod.signInAnonymously(auth);
-      playerUid = credential.user.uid;
-      backendMode = 'firebase';
-      return { mode: backendMode, uid: playerUid };
-    } catch (error) {
-      console.error('Firebase konnte nicht initialisiert werden; Demo-Modus wird verwendet.', error);
-      backendMode = 'demo';
-      playerUid = getDemoUid();
-      throw new Error(`Firebase-Verbindung fehlgeschlagen: ${error?.message || 'Unbekannter Fehler'}`);
-    }
+async function initializeBackend() {
+  if (!FIREBASE_ENABLED) {
+    throw new Error('Firebase ist nicht konfiguriert. Geräteübergreifendes Spielen benötigt Firebase.');
   }
-  playerUid = getDemoUid();
-  backendMode = 'demo';
-  return { mode: backendMode, uid: playerUid };
+  const [appMod, authMod, dbMod] = await Promise.all([
+    import('https://www.gstatic.com/firebasejs/12.4.0/firebase-app.js'),
+    import('https://www.gstatic.com/firebasejs/12.4.0/firebase-auth.js'),
+    import('https://www.gstatic.com/firebasejs/12.4.0/firebase-database.js')
+  ]);
+  firebaseApi = { ...appMod, ...authMod, ...dbMod };
+  const app = appMod.getApps().length ? appMod.getApp() : appMod.initializeApp(firebaseConfig);
+  auth = authMod.getAuth(app);
+  await authMod.setPersistence(auth, authMod.browserLocalPersistence);
+  await auth.authStateReady();
+  const user = auth.currentUser || (await authMod.signInAnonymously(auth)).user;
+  db = dbMod.getDatabase(app);
+  if (!WORKER_URL) dbMod.onValue(dbMod.ref(db, '.info/serverTimeOffset'), (snapshot) => {
+    setServerTimeOffset(Number(snapshot.val()) || 0);
+  });
+  playerUid = user.uid;
+  backendMode = WORKER_URL ? 'worker' : 'firebase';
+  configureStore({mutate:mutateRoom, action:WORKER_URL ? callAction : null});
+  return { mode:backendMode, uid:playerUid };
 }
 
-function getDemoUid() {
-  const key = 'hideseek-demo-player-id';
-  try {
-    let uid = sessionStorage.getItem(key);
-    if (!uid) {
-      uid = `demo_${Math.random().toString(36).slice(2, 10)}_${Date.now().toString(36)}`;
-      sessionStorage.setItem(key, uid);
-    }
-    return uid;
-  } catch {
-    return `demo_${Math.random().toString(36).slice(2, 14)}`;
-  }
+function requireBackend() {
+  if (!['firebase','worker'].includes(backendMode) || !playerUid) throw new Error('Firebase ist nicht verbunden. Bitte erneut verbinden.');
 }
 
 export function getBackendMode() { return backendMode; }
@@ -81,79 +57,111 @@ function roomRef(code) {
 }
 
 export async function getRoom(code) {
+  requireBackend();
+  if (WORKER_URL) return (await workerRequest(`/rooms/${code}`)).room;
   if (backendMode === 'firebase') {
     const snapshot = await firebaseApi.get(roomRef(code));
-    return snapshot.exists() ? snapshot.val() : null;
+    return snapshot.exists() ? normalizeRoom(snapshot.val()) : null;
   }
-  return readDemoRoom(code);
+  throw new Error('Firebase ist nicht verbunden.');
 }
 
 export async function createRoom(code, initialRoom) {
+  requireBackend();
+  if (WORKER_URL) { await workerRequest(`/rooms/${code}`, {action:'create', name:initialRoom.players[playerUid].name}); return true; }
   if (backendMode === 'firebase') {
     const result = await firebaseApi.runTransaction(roomRef(code), (current) => current == null ? initialRoom : undefined, { applyLocally: false });
     return result.committed;
   }
-  if (readDemoRoom(code)) return false;
-  localStorage.setItem(demoKey(code), JSON.stringify(initialRoom));
-  emitDemoRoom(code, initialRoom);
-  return true;
+  throw new Error('Firebase ist nicht verbunden.');
 }
 
 export async function mutateRoom(code, mutator) {
+  requireBackend();
+  if (WORKER_URL) throw new Error('Direkte Raumänderungen sind im sicheren Backend gesperrt.');
   if (backendMode === 'firebase') {
-    const result = await firebaseApi.runTransaction(roomRef(code), (current) => {
-      if (current == null) return undefined;
-      return mutator(current) ?? undefined;
-    }, { applyLocally: false });
-    if (!result.committed) return null;
-    return result.snapshot.val();
+    return transactRoom(firebaseApi, roomRef(code), mutator);
   }
-  const current = readDemoRoom(code);
-  if (!current) return null;
-  const next = mutator(structuredCloneSafe(current));
-  if (next == null) return null;
-  localStorage.setItem(demoKey(code), JSON.stringify(next));
-  emitDemoRoom(code, next);
-  return next;
+  throw new Error('Firebase ist nicht verbunden.');
 }
 
 export function subscribeRoom(code, onValue, onError = () => {}) {
-  if (backendMode === 'firebase') {
-    return firebaseApi.onValue(roomRef(code), (snapshot) => onValue(snapshot.exists() ? snapshot.val() : null), onError);
+  requireBackend();
+  if (WORKER_URL) {
+    let stopped = false, timer = null, lastValue = null;
+    const poll = async () => {
+      try {
+        const room = await getRoom(code);
+        if (stopped) return;
+        const value = JSON.stringify(room);
+        if (value !== lastValue) { lastValue = value; onValue(room); }
+      } catch (error) { if (!stopped) onError(error); }
+      finally { if (!stopped) timer = setTimeout(poll, 2500); }
+    };
+    poll();
+    return () => { stopped = true; clearTimeout(timer); };
   }
-  if (!demoListeners.has(code)) demoListeners.set(code, new Set());
-  const listeners = demoListeners.get(code);
-  listeners.add(onValue);
-  const storageHandler = (event) => {
-    if (event.key === demoKey(code)) onValue(readDemoRoom(code));
-  };
-  const customHandler = (event) => {
-    if (event.detail?.code === code) onValue(readDemoRoom(code));
-  };
-  window.addEventListener('storage', storageHandler);
-  window.addEventListener('hideseek-demo-update', customHandler);
-  queueMicrotask(() => onValue(readDemoRoom(code)));
-  return () => {
-    listeners.delete(onValue);
-    window.removeEventListener('storage', storageHandler);
-    window.removeEventListener('hideseek-demo-update', customHandler);
-  };
+  if (backendMode === 'firebase') {
+    return firebaseApi.onValue(roomRef(code), (snapshot) => onValue(snapshot.exists() ? normalizeRoom(snapshot.val()) : null), onError);
+  }
+  throw new Error('Firebase ist nicht verbunden.');
 }
 
 export async function deleteRoom(code) {
+  requireBackend();
   if (backendMode === 'firebase') {
     await firebaseApi.remove(roomRef(code));
     return;
   }
-  localStorage.removeItem(demoKey(code));
-  emitDemoRoom(code, null);
+  throw new Error('Firebase ist nicht verbunden.');
 }
 
 export function subscribeConnection(onStatus) {
+  if (WORKER_URL && playerUid) {
+    connectionListener = onStatus;
+    onStatus(navigator.onLine);
+    return () => { if (connectionListener === onStatus) connectionListener = null; };
+  }
   if (backendMode !== 'firebase') {
-    onStatus(true);
+    onStatus(false);
     return () => {};
   }
   const infoRef = firebaseApi.ref(db, '.info/connected');
   return firebaseApi.onValue(infoRef, (snapshot) => onStatus(snapshot.val() === true));
+}
+
+let connectionListener = null;
+async function workerRequest(path, body) {
+  const token = await auth.currentUser.getIdToken();
+  const started = Date.now();
+  let response;
+  try {
+    response = await fetch(`${WORKER_URL.replace(/\/$/,'')}${path}`, {
+      method:body ? 'POST' : 'GET', cache:'no-store',
+      headers:{Authorization:`Bearer ${token}`, ...(body ? {'Content-Type':'application/json'} : {})},
+      ...(body ? {body:JSON.stringify(body)} : {}), signal:AbortSignal.timeout(15000)
+    });
+  } catch (error) { connectionListener?.(false); throw error; }
+  const data = await response.json();
+  connectionListener?.(true);
+  if (!response.ok) {
+    const messages={NOT_MEMBER:'Du bist noch kein bestätigtes Raum-Mitglied.',HOST_ONLY:'Nur der Host darf diese Aktion ausführen.',LOBBY_CLOSED:'Der Raum ist geschlossen oder läuft bereits.',ROOM_EXPIRED:'Der Raum ist abgelaufen.',STALE_CATCH:'Diese Fanganfrage ist nicht mehr gültig.',RATE_LIMIT:'Zu viele Aktionen. Bitte kurz warten.',CENTER_REQUIRED:'Bitte zuerst einen Zonenmittelpunkt wählen.',FRESH_GPS_REQUIRED:'Eine aktuelle, genaue GPS-Messung wird benötigt.',TASK_COOLDOWN:'Bitte vor einer neuen Aufgabe kurz warten.',INVALID_CHALLENGE:'Die Aufgabe ist abgelaufen, zu früh gelöst oder wurde bereits vergütet.',WRONG_ANSWER:'Diese Antwort ist nicht korrekt.',FROZEN:'Spielaktionen sind während der Sperrzeit nicht verfügbar.',CODE_IN_USE:'Dieser Raumcode ist bereits vergeben.',UNAUTHENTICATED:'Die Anmeldung ist abgelaufen. Bitte erneut anmelden.'};
+    throw new Error(messages[data.error] || data.error || `Backend: ${response.status}`);
+  }
+  if (data.serverTime) setServerTimeOffset(data.serverTime - (started + Date.now()) / 2);
+  return data;
+}
+export async function workerCommand(code, action, payload={}) {
+  return workerRequest(`/rooms/${code}`, {action,...payload});
+}
+function callAction(action, args) {
+  const [code, , third, fourth] = args;
+  if (typeof code !== 'string') return null;
+  const fields = {
+    advanceExpiredPhase:{}, maybePayTimeReward:{}, updatePlayerLocation:{location:third},
+    requestCatch:{targetId:third}, respondToCatch:{accepted:third, requestId:fourth},
+    buySkill:{skillId:third}, activateSkill:{skillId:third,params:fourth},
+    collectItemBox:{boxId:third}, completeTask:{kind:third,proof:fourth}, leaveRoom:{}
+  };
+  return workerCommand(code,action,fields[action]).then((data)=>data.result);
 }

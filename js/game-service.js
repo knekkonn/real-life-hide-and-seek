@@ -1,4 +1,5 @@
-import { mutateRoom, getPlayerUid } from './backend.js';
+import { validPoint } from './gps.js';
+import { mutateRoom, remoteAction } from './store.js';
 import { DEFAULT_SETTINGS, SKILLS, eligibleSkills, SKILL_IDS } from './skills.js';
 import { now, randomId, randomFrom, randomPointInRadius, distanceMeters, clamp } from './utils.js';
 
@@ -17,6 +18,9 @@ export function createRoomData(hostId, hostName) {
 
 export function addPlayerToRoom(room, uid, name) {
   if (!room) return { ok:false, reason:'Diese Lobby existiert nicht.' };
+  if (['closed','finished'].includes(room.phase)) return { ok:false, reason:'Diese Runde ist beendet.' };
+  if (typeof name !== 'string' || name.trim().length < 2 || name.length > 18 || !/^[\p{L}\p{N}_ -]+$/u.test(name)) return { ok:false, reason:'Ungültiger Codename.' };
+  if (!uid) return { ok:false, reason:'Anmeldung fehlt.' };
   if (room.players?.[uid]) {
     const existing = room.players[uid];
     if (existing.status === 'left') {
@@ -45,10 +49,16 @@ export function addPlayerToRoom(room, uid, name) {
 export function updateSettings(room, uid, patch) {
   if (room.hostId !== uid || room.phase !== 'lobby') return null;
   room.settings ||= JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
-  room.settings = { ...room.settings, ...patch, skills:{ ...room.settings.skills, ...(patch.skills || {}) } };
+  const allowed = ['mode','hideDuration','gameDuration','radius','seekerCount','announcements'];
+  const safePatch = Object.fromEntries(allowed.filter((key) => key in patch).map((key) => [key, patch[key]]));
+  if (patch.center && validPoint(patch.center)) safePatch.center = {lat:patch.center.lat, lng:patch.center.lng};
+  const skills = Object.fromEntries(SKILL_IDS.filter((id) => typeof patch.skills?.[id] === 'boolean').map((id) => [id,patch.skills[id]]));
+  room.settings = { ...room.settings, ...safePatch, skills:{ ...room.settings.skills, ...skills } };
+  if (!['classic','infected'].includes(room.settings.mode)) room.settings.mode = 'classic';
+  room.settings.announcements = room.settings.announcements !== false;
   room.settings.hideDuration = clamp(Number(room.settings.hideDuration) || 180, 120, 300);
   room.settings.gameDuration = clamp(Number(room.settings.gameDuration) || 1200, 900, 1800);
-  room.settings.radius = clamp(Number(room.settings.radius) || 500, 100, 1500);
+  room.settings.radius = clamp(Number(room.settings.radius) || 500, 100, 2000);
   room.settings.seekerCount = clamp(Number(room.settings.seekerCount) || 1, 1, 10);
   return room;
 }
@@ -58,7 +68,7 @@ export function startCountdown(room, uid, hostLocation) {
   const players = Object.values(room.players || {}).filter((player) => player.active);
   if (room.phase !== 'lobby') return { ok:false, reason:'Diese Runde wurde bereits gestartet.' };
   if (players.length < 2) return { ok:false, reason:'Mindestens 2 Spieler werden benötigt.' };
-  const center = hostLocation || room.players?.[uid]?.location || players.find((p) => p.location)?.location || null;
+  const center = room.settings.center || hostLocation || null;
   if (center) room.settings.center = { lat:center.lat, lng:center.lng };
   const requestedSeekers = clamp(Number(room.settings.seekerCount) || 1, 1, 10);
   if (requestedSeekers >= players.length) {
@@ -100,10 +110,12 @@ export function startCountdown(room, uid, hostLocation) {
 }
 
 export async function advanceExpiredPhase(code, room) {
+  const remote = remoteAction('advanceExpiredPhase', [code, room]);
+  if (remote) return remote;
   if (!room?.phaseEndsAt || now() < room.phaseEndsAt) return false;
   return mutateRoom(code, (current) => {
     if (!current?.phaseEndsAt || now() < current.phaseEndsAt) return null;
-    const timestamp = now();
+    const timestamp = current.phaseEndsAt;
     if (current.phase === 'countdown') {
       current.phase = 'reveal';
       current.phaseEndsAt = timestamp + 4500;
@@ -140,6 +152,8 @@ export async function advanceExpiredPhase(code, room) {
 }
 
 export async function maybePayTimeReward(code, uid) {
+  const remote = remoteAction('maybePayTimeReward', [code, uid]);
+  if (remote) return remote;
   return mutateRoom(code, (room) => {
     const player = room.players?.[uid];
     if (!player || room.phase !== 'playing' || player.role !== 'seeker' || !player.active) return null;
@@ -153,12 +167,15 @@ export async function maybePayTimeReward(code, uid) {
 }
 
 export async function updatePlayerLocation(code, uid, location) {
+  const remote = remoteAction('updatePlayerLocation', [code, uid, location]);
+  if (remote) return remote;
   return mutateRoom(code, (room) => {
     const player = room.players?.[uid];
     if (!player || !player.active) return null;
-    player.location = { lat:Number(location.lat), lng:Number(location.lng), accuracy:Number(location.accuracy) || null };
+    if (!validPoint(location) || !Number.isFinite(location.accuracy) || location.accuracy <= 0 || !Number.isFinite(location.measuredAt) || now() - location.measuredAt > 10000 || location.measuredAt > now() + 2000) return null;
+    player.location = { lat:location.lat, lng:location.lng, accuracy:location.accuracy, measuredAt:location.measuredAt };
     player.locationAt = now();
-    if (!room.settings.center) {
+    if (!room.settings.center && room.hostId === uid && location.accuracy <= 50) {
       room.settings.center = { lat:player.location.lat, lng:player.location.lng };
       if (room.phase === 'playing' && Object.keys(room.itemBoxes || {}).length === 0) {
         for (let i=0;i<5;i++) {
@@ -185,6 +202,8 @@ export async function updatePlayerLocation(code, uid, location) {
 }
 
 export async function requestCatch(code, seekerId, targetId) {
+  const remote = remoteAction('requestCatch', [code, seekerId, targetId]);
+  if (remote) return remote;
   return mutateRoom(code, (room) => {
     const seeker = room.players?.[seekerId];
     const target = room.players?.[targetId];
@@ -197,13 +216,15 @@ export async function requestCatch(code, seekerId, targetId) {
   });
 }
 
-export async function respondToCatch(code, targetId, accepted) {
+export async function respondToCatch(code, targetId, accepted, requestId=null) {
+  const remote = remoteAction('respondToCatch', [code, targetId, accepted, requestId]);
+  if (remote) return remote;
   return mutateRoom(code, (room) => {
     const request = room.pendingCatch;
-    if (!request || request.targetId !== targetId || request.status !== 'pending') return null;
+    if (room.phase !== 'playing' || !request || request.targetId !== targetId || request.status !== 'pending' || (requestId && request.id !== requestId) || now() - request.createdAt > 20000 || request.createdAt > now()) return null;
     const target = room.players?.[targetId];
     const seeker = room.players?.[request.seekerId];
-    if (!target || !seeker) { room.pendingCatch = null; return room; }
+    if (!target || !seeker || !target.active || !seeker.active || target.role !== 'hider' || seeker.role !== 'seeker') return null;
     if (!accepted) {
       room.pendingCatch = null;
       room.announcement = { id:randomId('announcement'), type:'private', targetId:request.seekerId, title:'CATCH DECLINED', message:`${target.name} hat den Fang abgelehnt.`, createdAt:now() };
@@ -244,6 +265,8 @@ export async function respondToCatch(code, targetId, accepted) {
 }
 
 export async function buySkill(code, uid, skillId) {
+  const remote = remoteAction('buySkill', [code, uid, skillId]);
+  if (remote) return remote;
   const skill = SKILLS[skillId];
   if (!skill) return { ok:false, reason:'Unbekannte Fähigkeit.' };
   const result = await mutateRoom(code, (room) => {
@@ -263,6 +286,8 @@ export async function buySkill(code, uid, skillId) {
 }
 
 export async function activateSkill(code, uid, skillId, params={}) {
+  const remote = remoteAction('activateSkill', [code, uid, skillId, params]);
+  if (remote) return remote;
   const skill = SKILLS[skillId];
   if (!skill) return { ok:false, reason:'Unbekannte Fähigkeit.' };
   const result = await mutateRoom(code, (room) => {
@@ -321,6 +346,8 @@ export async function activateSkill(code, uid, skillId, params={}) {
 }
 
 export async function collectItemBox(code, uid, boxId) {
+  const remote = remoteAction('collectItemBox', [code, uid, boxId]);
+  if (remote) return remote;
   const result = await mutateRoom(code, (room) => {
     const player = room.players?.[uid];
     const box = room.itemBoxes?.[boxId];
@@ -352,7 +379,9 @@ export async function collectItemBox(code, uid, boxId) {
   return { ok:true };
 }
 
-export async function completeTask(code, uid, reward) {
+export async function completeTask(code, uid, reward, proof=null) {
+  const remote = remoteAction('completeTask', [code, uid, reward, proof]);
+  if (remote) return remote;
   const points = reward === 'shake' ? 15 : 25;
   const result = await mutateRoom(code, (room) => {
     const player = room.players?.[uid];
@@ -374,9 +403,10 @@ export async function completeTask(code, uid, reward) {
 }
 
 export async function leaveRoom(code, uid) {
+  const remote = remoteAction('leaveRoom', [code, uid]);
+  if (remote) return remote;
   return mutateRoom(code, (room) => {
-    if (room.hostId === uid && room.phase === 'lobby') {
-      room.players = {};
+    if (room.hostId === uid) {
       room.phase = 'closed';
       room.closedAt = now();
       return room;
