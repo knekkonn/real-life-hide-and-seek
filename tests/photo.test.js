@@ -26,3 +26,18 @@ test('round photo compression rejects unsupported or excessive source files befo
   await assert.rejects(compressRoundPhoto({type:'image/jpeg',size:21*1024*1024},{bitmapFactory}),/unter 20 MB/);
   assert.equal(decoded,false);
 });
+
+test('compressed photos always fit the Worker pixel limits, even when a large image compresses easily', async () => {
+  for (const image of [{width:4032,height:3024},{width:3024,height:4032}]) {
+    let encodedSize;
+    await compressRoundPhoto({type:'image/jpeg',size:8*1024*1024},{
+      bitmapFactory:async()=>image,
+      canvasFactory:()=>({
+        width:0,height:0,
+        getContext:()=>({drawImage(){}}),
+        toDataURL(type) { encodedSize={width:this.width,height:this.height}; return `data:${type};base64,${'A'.repeat(100)}`; }
+      })
+    });
+    assert.ok(encodedSize.width<=320 && encodedSize.height<=240,`${image.width}×${image.height} was reduced to an accepted size`);
+  }
+});
