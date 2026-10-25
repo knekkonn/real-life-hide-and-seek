@@ -5,6 +5,7 @@ import { MAX_PLAYERS, MIN_PLAYERS } from './config.js';
 import { COSMETIC_IDS } from './profile.js';
 import { SKILLS, SKILL_IDS, DEFAULT_SETTINGS, skillTuning, tacticalTuning } from './skills.js';
 import { createSkillLabSession, setSkillLabRadius, queueSkillLabPlacement, activateSkillLabSkill, activateSkillLabTactical, moveSkillLabTarget, attemptSkillLabCatch, skillLabSnapshot } from './skill-lab.js';
+import { TASK_LAB_CATALOG, createTaskLabSession, startTaskLabTask, setTaskLabDistance, advanceTaskLabStay, completeTaskLabTask, cancelTaskLabTask, taskLabSnapshot } from './task-lab.js';
 import {
   createRoomData, addPlayerToRoom, updateSettings, startCountdown, advanceExpiredPhase,
   maybePayTimeReward, updatePlayerLocation, requestCatch, buySkill,
@@ -15,7 +16,7 @@ import { clamp, now, formatTime, escapeHTML, randomCode, distanceMeters, Sound, 
 
 const $ = (id) => document.getElementById(id);
 const state = {
-  uid:null, playerName:'', roomCode:null, room:null, profile:null, testModeExpiresAt:0, skillLabSession:null, skillLabTimer:null, unsubscribe:null, connected:true,
+  uid:null, playerName:'', roomCode:null, room:null, profile:null, testModeExpiresAt:0, skillLabSession:null, taskLabSession:null, skillLabTimer:null, unsubscribe:null, connected:true,
   ownLocation:null, watchId:null, gpsPending:false, gpsAuthorized:false, gpsWatchCallbacks:null, gpsSyncStatus:'idle', lastLocationWrite:0,
   lastAnnouncementId:null, lastSeekerSideAnnouncementId:null, subscriptionStartedAt:0, seenCatchRequest:null,
   revealDismissedPhase:null, lastCountdownSecond:null, currentTab:'mapTab', lastCelebratedRoundId:null, lastTracksRoundId:null,
@@ -140,6 +141,7 @@ async function unlockTestMode() {
 function resetSkillLab(role=state.skillLabSession?.role||'seeker') {
   const radius=Number($('skillLabRadius')?.value)||500;
   state.skillLabSession=createSkillLabSession(role,radius);
+  state.taskLabSession=createTaskLabSession(role);
   if($('skillLabCatchDistance')) $('skillLabCatchDistance').value='6';
   renderSkillLab();
 }
@@ -150,6 +152,7 @@ function renderSkillLab() {
   const timeLeft=Math.max(0,Math.ceil((state.testModeExpiresAt-now())/1000));
   if(timeLeft===0) {
     state.skillLabSession=null;
+    state.taskLabSession=null;
     clearInterval(state.skillLabTimer); state.skillLabTimer=null;
     $('skillLab').classList.add('hidden'); $('testDiagnostics').classList.add('hidden');
     toast('Testmodus beendet','Gib den Zugangscode erneut ein, um weiterzutesten.','info');
@@ -195,7 +198,54 @@ function renderSkillLab() {
   const tuning=tacticalTuning({radius:session.radius});
   const tacticalCards=session.role==='seeker'?`<article class="skill-lab-card"><div class="skill-lab-card-top"><span class="skill-lab-icon">⊘</span><span class="tiny-label">${tuning.zoneCost} P · ${tuning.zoneRadius} M</span></div><h4>Sperrzone</h4><p>Setze eine markierte Trainingszone auf die Karte und teste Radius sowie Punktkosten.</p><button type="button" class="button button-secondary" data-lab-tactical="zone">Sperrzone testen</button></article><article class="skill-lab-card"><div class="skill-lab-card-top"><span class="skill-lab-icon">⇄</span><span class="tiny-label">ZEIT GEGEN PUNKTE</span></div><h4>Zeit tauschen</h4><p>Verkürze die Trainingsrunde um 30 Sekunden und erhalte ${tuning.exchangeReward(30)} Punkte.</p><button type="button" class="button button-secondary" data-lab-tactical="exchangeTime" data-lab-seconds="30">30 s eintauschen</button></article><article class="skill-lab-card"><div class="skill-lab-card-top"><span class="skill-lab-icon">↗</span><span class="tiny-label">ABSTAND ${tuning.relocateDistance} M</span></div><h4>Hider umpositionieren</h4><p>Wähle einen, zufälligen oder alle Trainings-Hider. Die Kosten skalieren mit der Anzahl.</p><button type="button" class="button button-secondary" data-lab-tactical="relocate" data-lab-mode="random">Zufälligen Hider testen · ${tuning.relocationCost('random')} P</button></article>`:'';
   $('skillLabSkills').innerHTML=skillCards+tacticalCards;
-  $('skillLabLog').innerHTML=snapshot.log.length?snapshot.log.map(line=>`<p>${escapeHTML(line)}</p>`).join(''):'<p>Das Protokoll ist leer.</p>';
+  renderTaskLab();
+  const labLog=[...(state.taskLabSession?.log||[]),...snapshot.log].slice(0,8);
+  $('skillLabLog').innerHTML=labLog.length?labLog.map(line=>`<p>${escapeHTML(line)}</p>`).join(''):'<p>Das Protokoll ist leer.</p>';
+}
+
+function renderTaskLab() {
+  const root=$('skillLabTasks'),session=state.taskLabSession;
+  if(!root||!session) return;
+  const snapshot=taskLabSnapshot(session,now());
+  $('skillLabTaskSummary').textContent=`${snapshot.completed} geschafft · ${snapshot.failed} fehlgeschlagen · ${snapshot.credits} Test-Credits`;
+  const active=snapshot.active;
+  root.innerHTML=TASK_LAB_CATALOG[session.role].map(task=>{
+    const selected=active?.kind===task.kind;
+    const busy=Boolean(active&&!selected),cooling=snapshot.cooldownSeconds>0;
+    let controls='';
+    if(selected&&task.kind==='cipher') {
+      const clues=active.puzzle?.clues||[];
+      controls=`<div class="skill-lab-task-challenge"><p>Der Code enthält drei verschiedene Ziffern. Noch ${active.attemptsRemaining} Versuche.</p><ul>${clues.map(clue=>`<li><strong>${clue.guess}</strong> · ${clue.exact} richtig platziert · ${clue.misplaced} an anderer Stelle</li>`).join('')}</ul><div class="skill-lab-task-input"><input data-task-answer type="text" inputmode="numeric" pattern="[0-9]{3}" maxlength="3" autocomplete="off" aria-label="Dreistelliger Testcode" placeholder="000"><button class="button button-primary" type="button" data-task-action="submit">Code prüfen</button></div></div>`;
+    } else if(selected&&['visit','scan'].includes(task.kind)) {
+      controls=`<div class="skill-lab-task-challenge"><p>Testziel liegt innerhalb der Spielzone. Keine Karten- oder GPS-Abfrage wird gesendet.</p><button class="button button-primary" type="button" data-task-action="arrive">${task.kind==='scan'?'Cache erreicht · Scan testen':'Ziel erreicht simulieren'}</button></div>`;
+    } else if(selected&&task.kind==='stay') {
+      const progress=Math.round(active.elapsed/60*100);
+      controls=`<div class="skill-lab-task-challenge"><p>Simulierte Standzeit: <strong>${active.elapsed} / 60 s</strong></p><div class="relocation-progress"><i style="width:${progress}%"></i></div><div class="skill-lab-task-actions"><button class="button button-secondary" type="button" data-task-action="stay-step" ${active.elapsed>=60?'disabled':''}>+15 s simulieren</button><button class="button button-primary" type="button" data-task-action="submit" ${active.elapsed<60?'disabled':''}>Aufgabe abgeben</button></div></div>`;
+    } else if(selected&&task.kind==='photo') {
+      controls=`<div class="skill-lab-task-challenge"><label class="field-label" for="taskLabPhoto">Kamera oder Bild auswählen</label><input id="taskLabPhoto" data-task-photo class="modal-input" type="file" accept="image/*" capture="environment"><p data-task-photo-status role="status">Das verkleinerte Foto bleibt nur im Arbeitsspeicher dieser Trainingssitzung.</p>${active.photoData?`<img class="skill-lab-photo-preview" src="${escapeHTML(active.photoData)}" alt="Lokal verkleinertes Testfoto"><button class="button button-primary" type="button" data-task-action="submit">Komprimierung bestätigen</button>`:''}</div>`;
+    } else if(selected&&task.kind==='proximity') {
+      controls=`<div class="skill-lab-task-challenge"><label class="field-label" for="taskLabDistance">Simulierter Abstand zum Hider</label><div class="skill-lab-task-input"><input id="taskLabDistance" data-task-distance type="number" inputmode="decimal" min="0" max="2000" step="1" value="${active.distanceMeters}"><span>m</span><button class="button button-primary" type="button" data-task-action="submit" ${active.distanceMeters>10?'disabled':''}>Nähe bestätigen</button></div><p>${active.distanceMeters<=10?'Im 10-m-Suchradius.':'Auf 10 m herangehen, um den Test abzuschließen.'}</p></div>`;
+    }
+    const action=selected?`<button class="text-button skill-lab-task-cancel" type="button" data-task-action="cancel">Test abbrechen</button>`:`<button class="button button-secondary" type="button" data-task-start="${task.kind}" ${busy||cooling?'disabled':''}>${cooling?`Cooldown ${snapshot.cooldownSeconds} s`:busy?'Andere Aufgabe läuft':'Aufgabe testen'}</button>`;
+    return `<article class="skill-lab-task-card${selected?' is-active':''}"><div class="skill-lab-task-top"><span class="skill-lab-icon">${task.icon}</span><span class="tiny-label">${task.duration} SEK. · +${task.reward} TEST-CREDITS</span></div><h4>${task.name}</h4><p>${task.description}</p>${selected?controls:''}${action}</article>`;
+  }).join('');
+}
+
+function reportTaskLabResult(result) {
+  if(!result?.ok) { $('skillLabHint').textContent=result?.reason||'Trainingsaufgabe konnte nicht abgeschlossen werden.'; $('skillLabHint').dataset.result='error'; }
+  else { $('skillLabHint').textContent=result.message; $('skillLabHint').dataset.result='success'; }
+  renderTaskLab();
+  $('skillLabLog').innerHTML=[...(state.taskLabSession?.log||[]),...(state.skillLabSession?.log||[])].slice(0,8).map(line=>`<p>${escapeHTML(line)}</p>`).join('');
+}
+
+function startTaskLab(kind) {
+  const result=startTaskLabTask(state.taskLabSession,kind,now());
+  if(result.ok) {
+    $('skillLabHint').textContent=`${TASK_LAB_CATALOG[state.taskLabSession.role].find(task=>task.kind===kind)?.name||'Aufgabe'} gestartet. Alle Fortschritte bleiben lokal im Testmodus.`;
+    $('skillLabHint').dataset.result='';
+    renderTaskLab();
+    $('skillLabLog').innerHTML=[...(state.taskLabSession.log||[]),...(state.skillLabSession?.log||[])].slice(0,8).map(line=>`<p>${escapeHTML(line)}</p>`).join('');
+  } else reportTaskLabResult(result);
 }
 
 function commitLabCatchDistance({attempt=false}={}) {
@@ -335,6 +385,43 @@ async function startApp() {
     if(!result.ok&&!result.needsPlacement) $('skillLabHint').textContent=result.reason;
     renderSkillLab();
   });
+  $('skillLabTasks').addEventListener('click',async event=>{
+    const session=state.taskLabSession;if(!session) return;
+    const start=event.target.closest('[data-task-start]');
+    if(start) { startTaskLab(start.dataset.taskStart); return; }
+    const button=event.target.closest('[data-task-action]');if(!button) return;
+    const task=session.active,action=button.dataset.taskAction;
+    if(action==='cancel') { reportTaskLabResult(cancelTaskLabTask(session,now())); return; }
+    if(action==='stay-step') { advanceTaskLabStay(session,15); renderTaskLab(); return; }
+    if(action==='arrive') { reportTaskLabResult(completeTaskLabTask(session,{arrived:true},now())); return; }
+    let proof={};
+    if(task?.kind==='cipher') proof.answer=$('skillLabTasks').querySelector('[data-task-answer]')?.value||'';
+    if(task?.kind==='photo') proof.photoData=task.photoData;
+    reportTaskLabResult(completeTaskLabTask(session,proof,now()));
+  });
+  $('skillLabTasks').addEventListener('input',event=>{
+    const input=event.target.closest('[data-task-distance]');if(!input||!state.taskLabSession) return;
+    setTaskLabDistance(state.taskLabSession,Number(input.value));
+    const nearby=state.taskLabSession.active?.distanceMeters<=10;
+    const button=$('skillLabTasks').querySelector('[data-task-action="submit"]');if(button) button.disabled=!nearby;
+    const note=input.closest('.skill-lab-task-challenge')?.querySelector('p:last-child');if(note) note.textContent=nearby?'Im 10-m-Suchradius.':'Auf 10 m herangehen, um den Test abzuschließen.';
+  });
+  $('skillLabTasks').addEventListener('change',async event=>{
+    const input=event.target.closest('[data-task-photo]');if(!input||!state.taskLabSession?.active||state.taskLabSession.active.kind!=='photo') return;
+    const file=input.files?.[0];if(!file) return;
+    const status=$('skillLabTasks').querySelector('[data-task-photo-status]');if(status) status.textContent='Foto wird lokal verkleinert und von Metadaten bereinigt …';
+    try {
+      const photoData=await compressRoundPhoto(file);
+      if(state.taskLabSession?.active?.kind!=='photo') return;
+      state.taskLabSession.active.photoData=photoData;
+      state.taskLabSession.log.unshift(`Foto lokal auf ${(photoData.length/1024).toFixed(1)} KB verkleinert; es wurde nichts hochgeladen.`);
+      state.taskLabSession.log=state.taskLabSession.log.slice(0,8);
+      renderTaskLab();
+    } catch(error) {
+      toast('Foto-Test fehlgeschlagen',error.message||'Foto konnte nicht verarbeitet werden.','warn',5000);
+      reportTaskLabResult(cancelTaskLabTask(state.taskLabSession,now()));
+    }
+  });
   $('skillLabMap').addEventListener('click',event=>{
     const session=state.skillLabSession; if(!session?.placementPending) return;
     const rect=event.currentTarget.getBoundingClientRect();
@@ -344,7 +431,7 @@ async function startApp() {
   $('skillLabCenterDecoyBtn').addEventListener('click',()=>placeLabDecoy(50,50));
   $('skillLabMoveTargetBtn').addEventListener('click',()=>commitLabCatchDistance());
   $('skillLabCatchBtn').addEventListener('click',()=>commitLabCatchDistance({attempt:true}));
-  $('clearSkillLabLogBtn').addEventListener('click',()=>{if(state.skillLabSession){state.skillLabSession.log=[];renderSkillLab();}});
+  $('clearSkillLabLogBtn').addEventListener('click',()=>{if(state.skillLabSession)state.skillLabSession.log=[];if(state.taskLabSession)state.taskLabSession.log=[];renderSkillLab();});
   $('createRoomBtn').addEventListener('click', createLobby);
   $('joinRoomBtn').addEventListener('click', joinLobby);
   $('roomCode').addEventListener('input', (event) => { event.target.value = event.target.value.replace(/\D/g,'').slice(0,4); });
@@ -368,8 +455,8 @@ async function startApp() {
   $('photoTaskBtn').addEventListener('click', () => startTask('photo'));
   $('scanTaskBtn').addEventListener('click', () => startTask('scan'));
   $('proximityTaskBtn').addEventListener('click', () => startTask('proximity'));
-  $('newRoundBtn').addEventListener('click', startNewRound);
-  $('postRoundSettingsBtn').addEventListener('click', startNewRound);
+  $('newRoundBtn').addEventListener('click', restartSamePlayersRound);
+  $('postRoundSettingsBtn').addEventListener('click', returnToLobbyForSettings);
   $('leaveEndBtn').addEventListener('click', confirmLeaveRoom);
   $('modalCloseBtn').addEventListener('click', closeModal);
   $('modalRoot').addEventListener('click', (event) => { if (event.target.hasAttribute('data-close-modal')) closeModal(); });
@@ -1361,10 +1448,31 @@ async function startTask(kind) {
     },500);
   } catch(error) { toast('Aufgabe fehlgeschlagen',error.message,'warn'); }
 }
-async function startNewRound() {
+async function refreshRoomAfterRoundAction() {
+  const room=await getRoom(state.roomCode);
+  if(room) { state.room=room; renderGame(room); }
+}
+
+async function restartSamePlayersRound() {
   if (!isHost()) { toast('Host erforderlich','Nur der Host kann die nächste Runde starten.','warn'); return; }
-  try { await workerCommand(state.roomCode,'newRound'); toast('Neue Runde bereit','Einstellungen wurden zurückgesetzt. Der Host kann die Lobby konfigurieren und starten.','success'); }
-  catch(error) { toast('Neue Runde fehlgeschlagen',error.message,'danger'); }
+  const button=$('newRoundBtn');if(button) button.disabled=true;
+  try {
+    await workerCommand(state.roomCode,'restartRound');
+    await refreshRoomAfterRoundAction();
+    toast('Neue Runde startet','Die bisherigen Spieler bleiben im Raum; Rollen und Rundendaten werden erneuert.','success');
+  } catch(error) { toast('Sofort-Neustart fehlgeschlagen',error.message,'danger'); }
+  finally { if(button) button.disabled=false; }
+}
+
+async function returnToLobbyForSettings() {
+  if (!isHost()) { toast('Host erforderlich','Nur der Host kann die nächste Runde vorbereiten.','warn'); return; }
+  const button=$('postRoundSettingsBtn');if(button) button.disabled=true;
+  try {
+    await workerCommand(state.roomCode,'newRound');
+    await refreshRoomAfterRoundAction();
+    toast('Lobby ist bereit','Dieselben Spieler bleiben im Raum. Prüfe die Einstellungen und starte danach.','success');
+  } catch(error) { toast('Lobby konnte nicht geöffnet werden',error.message,'danger'); }
+  finally { if(button) button.disabled=false; }
 }
 
 function renderRoundPhotoGallery(room,role) {
