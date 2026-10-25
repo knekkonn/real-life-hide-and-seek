@@ -1,0 +1,93 @@
+.number-setting{display:flex;align-items:center;gap:6px;min-width:0;color:var(--muted);font:9px var(--font-mono)}
+.number-setting input,.skill-lab-radius input,.skill-lab-catch-controls input{width:84px;min-height:42px;padding:8px 10px;border:1px solid var(--line-strong);border-radius:9px;background:#0b131e;color:var(--text);font:600 13px var(--font-mono);text-align:center}
+.number-setting input:focus,.skill-lab-radius input:focus,.skill-lab-catch-controls input:focus{border-color:var(--cyan);outline:2px solid rgba(70,232,210,.15)}
+.setting-controls{display:flex;align-items:center;gap:12px}
+.radius-controls{display:flex;align-items:center;gap:12px;min-width:min(58%,390px)}
+.radius-controls input[type=range]{flex:1;min-width:80px;accent-color:var(--neon);touch-action:pan-x}
+.radius-controls .number-setting input{width:94px}
+.radius-controls output{min-width:44px;color:var(--muted);font:9px var(--font-mono);text-align:right}
+.skill-lab{margin-top:16px;padding:15px;border:1px solid rgba(70,232,210,.24);border-radius:13px;background:linear-gradient(145deg,rgba(12,29,37,.8),rgba(8,14,22,.94))}
+.skill-lab-heading,.skill-lab-subheading{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.skill-lab-heading h3{margin:3px 0 0;font:700 25px var(--font-head)}
+.skill-lab-time{white-space:nowrap;color:var(--neon);font:9px var(--font-mono)}
+.skill-lab-note{margin:8px 0 13px;color:var(--muted);font-size:10px;line-height:1.6}
+.skill-lab-controls{display:grid;grid-template-columns:1fr auto;align-items:center;gap:9px;margin-bottom:11px}
+.skill-lab-roles{display:flex;gap:4px;padding:4px;border:1px solid var(--line);border-radius:10px;background:rgba(4,9,15,.65)}
+.skill-lab-roles button{flex:1;min-height:40px;border:0;border-radius:7px;background:transparent;color:var(--muted);font-size:11px;font-weight:700;touch-action:manipulation}
+.skill-lab-roles button.is-active{background:rgba(70,232,210,.12);color:var(--cyan);box-shadow:inset 0 0 0 1px rgba(70,232,210,.24)}
+.skill-lab-radius{grid-column:1/-1;display:flex;align-items:center;gap:8px;color:var(--muted);font-size:10px}
+.skill-lab-radius input{margin-left:auto}
+.skill-lab-controls>.button{grid-column:1/-1;min-height:42px}
+.skill-lab-map{position:relative;width:min(100%,360px);aspect-ratio:1;margin:12px auto;overflow:hidden;border:1px solid var(--line-strong);border-radius:12px;background:radial-gradient(circle at center,rgba(70,232,210,.04),transparent 67%),#08111a;touch-action:manipulation;user-select:none}
+.skill-lab-grid{position:absolute;inset:0;opacity:.42;background-image:linear-gradient(rgba(86,118,139,.11) 1px,transparent 1px),linear-gradient(90deg,rgba(86,118,139,.11) 1px,transparent 1px);background-size:10% 10%;pointer-events:none}
+.skill-lab-zone{position:absolute;left:8%;top:8%;width:84%;height:84%;border:1px dashed rgba(185,255,82,.45);border-radius:50%;background:radial-gradient(circle,rgba(185,255,82,.025),transparent 74%);pointer-events:none}
+.skill-lab-center{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);color:rgba(185,255,82,.26);font-size:22px;pointer-events:none}
+.skill-lab-marker{position:absolute;z-index:2;transform:translate(-50%,-50%);display:grid;justify-items:center;gap:2px;min-width:27px;color:var(--muted);pointer-events:none}
+.skill-lab-marker>span{display:grid;place-items:center;width:25px;height:25px;border:1px solid var(--cyan);border-radius:50%;background:rgba(5,18,24,.94);box-shadow:0 0 0 4px rgba(70,232,210,.1);color:var(--cyan);font:700 8px var(--font-mono)}
+.skill-lab-marker.self>span{width:32px;height:32px;border-color:var(--neon);border-radius:10px;background:rgba(185,255,82,.15);box-shadow:0 0 0 5px rgba(185,255,82,.12);color:var(--neon)}
+.skill-lab-marker.seeker>span{border-color:var(--red);box-shadow:0 0 0 4px rgba(255,85,120,.1);color:var(--red)}
+.skill-lab-marker.hider>span{border-color:var(--cyan);color:var(--cyan)}
+.skill-lab-marker.trap>span{border-color:var(--amber);border-radius:7px;color:var(--amber)}
+.skill-lab-marker.decoy>span{border-style:dashed;border-color:#bd98ff;color:#bd98ff}
+.skill-lab-marker.is-tracked>span{animation:skillLabPing 1s ease-in-out infinite}
+.skill-lab-marker.is-shielded>span{box-shadow:0 0 0 7px rgba(185,255,82,.2),0 0 23px rgba(185,255,82,.38)}
+.skill-lab-marker.is-ghosted{opacity:.44}
+.skill-lab-marker.is-silent>span{box-shadow:none;border-style:dotted;opacity:.72}
+.skill-lab-marker small{padding:2px 4px;border-radius:4px;background:rgba(4,9,15,.82);color:#b9c9d7;font:7px var(--font-mono);white-space:nowrap}
+.skill-lab-place-prompt,.skill-lab-result{position:absolute;z-index:4;left:50%;top:50%;transform:translate(-50%,-50%);padding:10px 12px;border:1px solid rgba(70,232,210,.4);border-radius:9px;background:rgba(4,11,18,.94);color:var(--cyan);font-size:10px;font-weight:700;text-align:center;pointer-events:none}
+.skill-lab-place-prompt small{color:var(--muted);font-weight:400}
+.skill-lab-feedback{position:absolute;z-index:3;inset:0;display:grid;place-items:center;color:rgba(255,85,120,.7);font:700 clamp(10px,3vw,16px) var(--font-mono);letter-spacing:.13em;background:repeating-linear-gradient(0deg,transparent 0 7px,rgba(255,85,120,.08) 8px 9px);pointer-events:none;animation:skillLabStatic .2s steps(2,end) infinite}
+.skill-lab-feedback.sprint{inset:auto 8% 8%;padding:8px;border:1px solid rgba(255,85,120,.4);border-radius:7px;background:rgba(26,8,15,.9);color:#ff9aae;font-size:8px;text-align:center;animation:skillLabPulse .8s ease-in-out infinite}
+.skill-lab-map.is-placing{cursor:crosshair;touch-action:none;border-color:var(--cyan)}
+.skill-lab-result{border-color:rgba(185,255,82,.55);color:var(--neon);animation:revealIn .25s ease}
+.skill-lab-hint{min-height:34px;margin:7px 0;padding:9px 10px;border:1px solid var(--line);border-radius:8px;color:#b9c9d7;font-size:10px;line-height:1.5}
+.skill-lab-hint[data-result=success]{border-color:rgba(185,255,82,.35);color:var(--neon)}
+.skill-lab-hint[data-result=error]{border-color:rgba(255,85,120,.35);color:#ff9db0}
+.skill-lab-catch-controls{display:grid;gap:6px;margin:9px 0 16px;padding:10px;border:1px solid var(--line);border-radius:9px;background:rgba(4,9,15,.42)}
+.skill-lab-catch-controls>label{color:var(--muted);font-size:9px}
+.skill-lab-catch-controls>div{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.skill-lab-catch-controls input{width:72px;min-height:40px}
+.skill-lab-catch-controls>div>span{margin-left:-2px;color:var(--muted);font:9px var(--font-mono)}
+.skill-lab-catch-controls .button{flex:1;min-height:40px;padding:8px;font-size:9px}
+.skill-lab-subheading{margin:14px 0 8px;color:#c8d6e1;font-size:10px}
+.skill-lab-subheading>span{color:var(--muted);font:8px var(--font-mono)}
+.skill-lab-subheading .text-button{padding:4px;font-size:9px}
+.skill-lab-skills{display:grid;grid-template-columns:1fr 1fr;gap:7px}
+.skill-lab-card{min-width:0;padding:10px;border:1px solid var(--line);border-radius:9px;background:rgba(5,11,18,.6)}
+.skill-lab-card.is-used{opacity:.62}
+.skill-lab-card-top{display:flex;align-items:center;justify-content:space-between;gap:5px}
+.skill-lab-icon{display:grid;place-items:center;min-width:28px;height:28px;border-radius:8px;background:rgba(70,232,210,.08);color:var(--cyan);font-size:17px}
+.skill-lab-card-top .tiny-label{font-size:7px;text-align:right}
+.skill-lab-card h4{margin:8px 0 3px;font:700 16px var(--font-head)}
+.skill-lab-card p{min-height:48px;margin:0 0 8px;color:var(--muted);font-size:9px;line-height:1.5}
+.skill-lab-card .button{width:100%;min-height:39px;padding:7px;font-size:9px}
+.skill-lab-card button:disabled{opacity:.48}
+.skill-lab-log{display:grid;gap:5px;max-height:160px;overflow:auto;padding:8px;border:1px solid var(--line);border-radius:8px;background:rgba(3,8,13,.58)}
+.skill-lab-log p{margin:0;color:#a8bac8;font-size:9px;line-height:1.5}
+.skill-lab-log p:first-child{color:var(--cyan)}
+@keyframes skillLabPing{50%{box-shadow:0 0 0 9px rgba(185,255,82,.2)}}
+@keyframes skillLabPulse{50%{opacity:.5;transform:scale(.98)}}
+@keyframes skillLabStatic{50%{opacity:.55}}
+@media(max-width:560px){
+  .setting-controls{gap:7px;flex-wrap:wrap;justify-content:flex-end}
+  .setting-controls .stepper{gap:5px}
+  .setting-controls .stepper output{min-width:45px;font-size:9px}
+  .setting-controls .number-setting input{width:66px;min-height:42px;padding:7px 5px}
+  .number-setting{font-size:8px}
+  .radius-controls{width:100%;min-width:0;gap:8px}
+  .radius-controls input[type=range]{min-width:60px}
+  .radius-controls .number-setting input{width:75px}
+  .radius-controls output{min-width:38px;font-size:8px}
+  .skill-lab{padding:12px}
+  .skill-lab-controls{grid-template-columns:1fr}
+  .skill-lab-roles,.skill-lab-radius,.skill-lab-controls>.button{grid-column:auto}
+  .skill-lab-controls>.button{width:100%}
+  .skill-lab-map{width:min(100%,340px)}
+  .skill-lab-catch-controls>div{display:grid;grid-template-columns:72px 1fr 1fr}
+  .skill-lab-catch-controls>div>span{display:none}
+  .skill-lab-catch-controls .button{min-height:44px;font-size:8px}
+  .skill-lab-skills{grid-template-columns:1fr}
+  .skill-lab-card{padding:12px}
+  .skill-lab-card p{min-height:0}
+  .skill-lab-card .button{min-height:44px}
+}

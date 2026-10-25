@@ -27,7 +27,8 @@ Eine responsive, PWA-fähige Web-App für ein GPS-basiertes Real-Life-Hide-and-S
 - Classic-Zuschauerstatus, Infiziert-Rollenwechsel und Ingame-Banner
 - Soundeffekte über Web Audio API, optionale Vibration, Reconnect-Feedback, GPS-Fehlerzustände
 - Firebase-E-Mail-Konten mit Passwort-Zurücksetzung und D1-gespeichertem Spielernamen, Cosmetic und Soundpräferenz
-- Zugangscode-geschützter Testmodus mit Geräte-, Speicher-, GPS- und Backend-Diagnose
+- Zugangscode-geschützter Spieltestmodus mit privater Hider-/Seeker-Skill-Simulation, Fangreichweiten-Test und Geräte-/Backend-Diagnose
+- Zahlenfelder neben den Reglern für Spielradius, Seeker-Anzahl und Rundenzeiten; gültige Grenzen werden beim Speichern angewendet
 - PWA-Manifest und Service Worker für das App-Shell-Caching
 - Lokale Darstellung ohne konfiguriertes Backend; sichere Multiplayer-Aufgaben sind dann deaktiviert
 
@@ -88,7 +89,8 @@ real-life-hide-seek/
 └── js/
     ├── config.js         # Firebase- und Spielgrenzen-Konfiguration
     ├── backend.js        # Firebase RTDB + lokaler Demo-Adapter
-    ├── skills.js         # Skill-Definitionen und Default-Settings
+    ├── skills.js         # Skill-Definitionen, Wirkungsstärken und Default-Settings
+    ├── skill-lab.js      # Isolierte Trainingssimulation für Rollen und Fähigkeiten
     ├── utils.js          # Zeit, GPS-Mathematik, Audio und Haptik
     ├── map.js            # Leaflet-Karte, Radius und Marker
     ├── game-service.js   # Spielphasen und transaktionale Aktionen
