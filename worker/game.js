@@ -4,6 +4,7 @@ import { evaluateZone, validPoint } from '../js/gps.js';
 import { distanceMeters, bearingDegrees, destinationPoint } from '../js/utils.js';
 import { findSafeItemLocations } from './itembox.js';
 import { skillTuning } from '../js/skills.js';
+import { COSMETIC_IDS } from '../js/profile.js';
 
 export function publicRoom(source, uid, timestamp=Date.now()) {
   const room = structuredClone(source);
@@ -160,10 +161,10 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
       let autoCompleteVisit=false;
       if (player.activeTask && !player.activeTask.completed && !player.activeTask.failed) {
         const task=player.activeTask;
-        if (timestamp>task.expiresAt || task.kind==='stay' && (timestamp-task.lastProofAt>10000 || distanceMeters(location,task.targetLocation)>15)) failTask(player,timestamp);
+        if (timestamp>task.expiresAt || task.kind==='stay' && (timestamp-task.lastProofAt>10000 || distanceMeters(location,task.targetLocation)>10)) failTask(player,timestamp);
         else if (task.kind==='stay') task.lastProofAt=timestamp;
         else if (['visit','scan'].includes(task.kind) && freshAccurate({...player,location,locationAt:timestamp},timestamp) && distanceMeters(location,task.targetLocation)<=task.radius) { task.arrivedAt=timestamp; autoCompleteVisit=task.kind==='visit'; }
-        else if (task.kind==='proximity' && hasNearbyHider(room,uid,location,timestamp,35)) task.arrivedAt=timestamp;
+        else if (task.kind==='proximity' && hasNearbyHider(room,uid,location,timestamp,10)) task.arrivedAt=timestamp;
       }
       await game.updatePlayerLocation(context,uid,{...location,measuredAt:timestamp});
       if(autoCompleteVisit && player.activeTask && !player.activeTask.completed && !player.activeTask.failed) {
@@ -203,14 +204,14 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
         if (!freshAccurate(player,timestamp)) throw new Error('FRESH_GPS_REQUIRED');
         const points=Object.values(room.objectives || {}); if (!points.length) throw new Error('NO_OBJECTIVES');
         task.targetLocation=points[crypto.getRandomValues(new Uint32Array(1))[0]%points.length].location;
-        task.radius=20;
+        task.radius=10;
       }
       if (kind==='scan') {
         if (!freshAccurate(player,timestamp)) throw new Error('FRESH_GPS_REQUIRED');
         const boxes=Object.values(room.itemBoxes||{}).filter(box=>!box.collected&&validPoint(box.location));
         if (!boxes.length) throw new Error('NO_OBJECTIVES');
         const box=boxes[crypto.getRandomValues(new Uint32Array(1))[0]%boxes.length];
-        task.targetLocation=box.location; task.targetBoxId=box.id; task.radius=20;
+        task.targetLocation=box.location; task.targetBoxId=box.id; task.radius=10;
       }
       if (kind==='proximity') {
         if (!freshAccurate(player,timestamp)) throw new Error('FRESH_GPS_REQUIRED');
@@ -221,8 +222,8 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
         const puzzle=makeLogicCodePuzzle(); task.answer=puzzle.answer;
         task.prompt=`TRESORCODE · 150 SEKUNDEN\nFinde den 3-stelligen Code. Alle drei Ziffern sind verschieden.\nJe Hinweis siehst du, wie viele Ziffern richtig platziert sind und wie viele zwar vorkommen, aber an der falschen Stelle stehen.\n\n${puzzle.clues.map(clue=>`${clue.guess} → ${clue.exact} richtig platziert · ${clue.misplaced} an anderer Stelle`).join('\n')}`;
       }
-      if (kind==='scan') task.prompt='Signal Cache scannen · Gehe zum markierten Cache und schließe den Scan in 120 Sekunden innerhalb von 20 m ab.';
-      if (kind==='proximity') task.prompt='Hider-Signal aufspüren · Komme innerhalb von 120 Sekunden auf 35 m an einen aktiven Hider heran. Der Server prüft die Nähe, gibt aber keine fremde GPS-Position frei.';
+      if (kind==='scan') task.prompt='Signal Cache scannen · Gehe zum markierten Cache und schließe den Scan in 120 Sekunden innerhalb von 10 m ab.';
+      if (kind==='proximity') task.prompt='Hider-Signal aufspüren · Komme innerhalb von 120 Sekunden auf 10 m an einen aktiven Hider heran. Der Server prüft die Nähe, gibt aber keine fremde GPS-Position frei.';
       player.activeTask=task;
       return {room,result:{id,kind,prompt:task.prompt,targetLocation:task.targetLocation,expiresAt:task.expiresAt,duration:task.duration}};
     }
@@ -251,13 +252,20 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
       } else if (task.kind==='visit' || task.kind==='scan') {
         if (!freshAccurate(player,timestamp) || distanceMeters(player.location,task.targetLocation)>task.radius) { failTask(player,timestamp); return {room,result:{error:'TASK_LOCATION_REQUIRED'}}; }
       } else if (task.kind==='proximity') {
-        if (!freshAccurate(player,timestamp) || !task.arrivedAt || timestamp-task.arrivedAt>10000 || !hasNearbyHider(room,uid,player.location,timestamp,35)) { failTask(player,timestamp); return {room,result:{error:'TASK_HIDER_NOT_NEARBY'}}; }
+        if (!freshAccurate(player,timestamp) || !task.arrivedAt || timestamp-task.arrivedAt>10000 || !hasNearbyHider(room,uid,player.location,timestamp,10)) { failTask(player,timestamp); return {room,result:{error:'TASK_HIDER_NOT_NEARBY'}}; }
       } else if (task.kind==='stay') {
-        if (timestamp-task.lastProofAt>10000 || timestamp-task.progressSince<task.duration || !freshAccurate(player,timestamp) || distanceMeters(player.location,task.targetLocation)>15) { failTask(player,timestamp); return {room,result:{error:'TASK_NOT_HELD'}}; }
+        if (timestamp-task.lastProofAt>10000 || timestamp-task.progressSince<task.duration || !freshAccurate(player,timestamp) || distanceMeters(player.location,task.targetLocation)>10) { failTask(player,timestamp); return {room,result:{error:'TASK_NOT_HELD'}}; }
       } else throw new Error('UNKNOWN_TASK');
       if(['visit','scan'].includes(task.kind) && !task.arrivedAt) { failTask(player,timestamp); return {room,result:{error:'TASK_LOCATION_REQUIRED'}}; }
       task.completed=true; player.taskCooldownUntil=timestamp+30000;
       result=await game.completeTask(context,uid,task.kind==='cipher'?'code':task.kind); break;
+    }
+    case 'syncProfile': {
+      const cosmeticId=input.cosmeticId;
+      if(!COSMETIC_IDS.includes(cosmeticId)) throw new Error('PROFILE_INVALID');
+      if(room.phase==='lobby'&&validName(input.displayName)) player.name=input.displayName.trim().replace(/\s+/g,' ');
+      player.cosmeticId=cosmeticId;
+      result=true; break;
     }
     case 'leaveRoom':
       if (room.players[uid]) { room.players[uid].active=false; room.players[uid].status='left'; room.players[uid].location=null; room.players[uid].locationAt=0; room.players[uid].zone={}; room.players[uid].activeTask=null; }
@@ -320,7 +328,7 @@ function recordRoundTrack(room,player,location,timestamp) {
 function failTask(player,timestamp) { if (!player.activeTask) return; player.activeTask.failed=true; player.taskCooldownUntil=timestamp+120000; }
 function freshAccurate(player,timestamp) { return player.location && timestamp-(player.locationAt||0)<=10000 && Number(player.location.accuracy)<=25; }
 function freshCatchLocation(player,timestamp) { return player.location && timestamp-(player.locationAt||0)<=15000 && timestamp>=player.locationAt && Number(player.location.accuracy)<=60; }
-function catchDistanceLimit(firstAccuracy,secondAccuracy) { return Math.max(8,Math.min(30,(Number(firstAccuracy)+Number(secondAccuracy))/2)); }
+function catchDistanceLimit() { return 8; }
 function hasNearbyHider(room,seekerId,location,timestamp,radius) {
   return validPoint(location) && Object.values(room.players||{}).some(target=>target.id!==seekerId&&target.active&&target.role==='hider'&&freshAccurate(target,timestamp)&&distanceMeters(location,target.location)<=radius);
 }

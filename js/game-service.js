@@ -58,7 +58,7 @@ export function updateSettings(room, uid, patch) {
   room.settings.announcements = room.settings.announcements !== false;
   room.settings.hideDuration = clamp(Number(room.settings.hideDuration) || 180, 120, 300);
   room.settings.gameDuration = clamp(Number(room.settings.gameDuration) || 1200, 900, 1800);
-  room.settings.radius = clamp(Number(room.settings.radius) || 500, 100, 2000);
+  room.settings.radius = clamp(Number(room.settings.radius) || 500, 50, 2000);
   room.settings.seekerCount = clamp(Number(room.settings.seekerCount) || 1, 1, 10);
   return room;
 }
@@ -266,7 +266,7 @@ export async function respondToCatch(code, targetId, accepted, requestId=null) {
 function freshCatchLocation(player,timestamp) {
   return Boolean(player.location && timestamp-(player.locationAt||0)<=15000 && timestamp>=player.locationAt && Number(player.location.accuracy)<=60);
 }
-function catchDistanceLimit(firstAccuracy,secondAccuracy) { return Math.max(8,Math.min(30,(Number(firstAccuracy)+Number(secondAccuracy))/2)); }
+function catchDistanceLimit() { return 8; }
 
 function awardPlayerHiderPoints(player,timestamp) {
   if (!player || player.role!=='hider' || !player.hiderStartedAt) return false;
@@ -289,7 +289,7 @@ export function awardElapsedHiderPoints(room,timestamp=now()) {
 
 function rewardSeekerForCatch(room,seeker,target,timestamp) {
   const remaining=Math.max(1,Object.values(room.players||{}).filter(p=>p.active&&p.role==='hider').length);
-  const radius=Math.max(100,Math.min(2000,Number(room.settings?.radius)||500));
+  const radius=Math.max(50,Math.min(2000,Number(room.settings?.radius)||500));
   const credits=Math.round((30+Math.floor(radius/250)*5+Math.min(10,remaining*3))/5)*5;
   const score=50+Math.floor(radius/250)*10+Math.min(20,remaining*5);
   seeker.coins=(Number(seeker.coins)||0)+credits;
@@ -444,7 +444,7 @@ export async function collectItemBox(code, uid, boxId) {
     const player = room.players?.[uid];
     const box = room.itemBoxes?.[boxId];
     if (!player || !player.active || !box || box.collected || room.phase !== 'playing' || !player.location) return null;
-    if (distanceMeters(player.location, box.location) > 15) return null;
+    if (distanceMeters(player.location, box.location) > 10) return null;
     box.collected = true;
     box.collectedBy = uid;
     box.collectedAt = now();
@@ -462,7 +462,7 @@ export async function collectItemBox(code, uid, boxId) {
     room.announcement = { id:randomId('announcement'), type:'private', targetId:uid, title:'SIGNAL CACHE SECURED', message:bonus ? `+10 Credits und ${SKILLS[bonus].short} gefunden!` : '+10 Credits eingesammelt.', createdAt:now() };
     return room;
   });
-  if (!result) return { ok:false, reason:'Du bist noch nicht nah genug (15 m), der Cache ist weg oder GPS ist nicht aktiv.' };
+  if (!result) return { ok:false, reason:'Du bist noch nicht nah genug (10 m), der Cache ist weg oder GPS ist nicht aktiv.' };
   return { ok:true };
 }
 

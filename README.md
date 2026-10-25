@@ -18,14 +18,16 @@ Eine responsive, PWA-fähige Web-App für ein GPS-basiertes Real-Life-Hide-and-S
 
 ## Enthalten
 
-- Lobby-Erstellung mit vierstelligem Raumcode und Beitritt über Codename
+- Lobby-Erstellung mit vierstelligem Raumcode und Beitritt über Codename; Spielradius von 50 bis 2.000 m
 - Host-Einstellungen: Classic/Infiziert, Versteckzeit, Matchdauer, Spielradius, Skill-Pool und Gefangen-Meldungen
 - Synchronisierte Countdown-, Rollen-Enthüllungs-, Versteck-, Live-Match- und Endphase
 - Leaflet-Karte mit kostenlosen OpenStreetMap-Kacheln ohne API-Key, dunkler Kartenansicht, Spielradius, GPS-Punkt, Feldzielen, Signal Caches, Täusch-Markern und Fallen
 - Rollenbezogene Hider-/Seeker-Aufgaben mit servergeprüften GPS-Zielen und Nähe, casual Tresorcode-Logikrätsel, Versteckfoto pro Runde, Fehlversuch-Cooldown und einmaligen Belohnungen (Worker erforderlich)
-- Seeker-/Hider-Arsenal, Münzen, Skill-Inventar, sofortiger Fang mit frisch überprüftem, genauigkeitsabhängigem GPS-Näherungsbereich, Rollenwechsel und Ingame-Banner
+- Seeker-/Hider-Arsenal, Münzen, Skill-Inventar, sofortiger Fang bei höchstens 8 m GPS-Abstand, Rollenwechsel und Ingame-Banner
 - Classic-Zuschauerstatus, Infiziert-Rollenwechsel und Ingame-Banner
 - Soundeffekte über Web Audio API, optionale Vibration, Reconnect-Feedback, GPS-Fehlerzustände
+- Firebase-E-Mail-Konten mit Passwort-Zurücksetzung und D1-gespeichertem Spielernamen, Cosmetic und Soundpräferenz
+- Zugangscode-geschützter Testmodus mit Geräte-, Speicher-, GPS- und Backend-Diagnose
 - PWA-Manifest und Service Worker für das App-Shell-Caching
 - Lokale Darstellung ohne konfiguriertes Backend; sichere Multiplayer-Aufgaben sind dann deaktiviert
 
@@ -67,7 +69,7 @@ Die aktuelle Anwendung ist ein funktionsreicher Client-Prototyp; die Realtime-Da
 ## Gameplay-Hinweise
 
 - Der Host sollte GPS vor Spielbeginn freigeben, damit der Spielradius und Signal Caches auf einen tatsächlichen Standort gesetzt werden können.
-- Signal Caches sind innerhalb von 15 m sammelbar; die Genauigkeit hängt vom Endgerät und GPS-Empfang ab.
+- Signal Caches sind innerhalb von 10 m sammelbar; die Genauigkeit hängt vom Endgerät und GPS-Empfang ab.
 - Caches werden nur auf öffentlich kartierten Fußwegen erzeugt. Fehlen geeignete OSM-Daten, erscheinen in der Runde keine Caches. GPS-Höhenunterschiede und OSM-Etagen-/Ebenenangaben erscheinen am Kartenmarker, sofern sie verfügbar sind.
 - Fangmeldungen werden auf dem Zielgerät bestätigt. GPS-Nähe allein bedeutet keinen Fang.
 - Die Shake-Challenge nutzt Bewegungsdaten, sofern das Gerät sie bereitstellt. Auf Desktop ist eine Demo-Simulation verfügbar.

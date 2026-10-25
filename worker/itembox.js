@@ -61,7 +61,7 @@ function relationRings(members=[]) {
 }
 
 export async function findSafeItemLocations(center,radius,fetchImpl=fetch) {
-  if(!center || !Number.isFinite(center.lat) || !Number.isFinite(center.lng) || !Number.isFinite(radius) || radius<100 || radius>2000) return [];
+  if(!center || !Number.isFinite(center.lat) || !Number.isFinite(center.lng) || !Number.isFinite(radius) || radius<50 || radius>2000) return [];
   const query=`[out:json][timeout:8];(way(around:${radius},${center.lat},${center.lng})["highway"~"^(footway|path|pedestrian|steps|track|cycleway)$"];way(around:${radius},${center.lat},${center.lng})["access"~"^(no|private|customers|permit)$"];way(around:${radius},${center.lat},${center.lng})["foot"~"^(no|private)$"];way(around:${radius},${center.lat},${center.lng})["building"]["building"!="no"];way(around:${radius},${center.lat},${center.lng})["landuse"="military"];way(around:${radius},${center.lat},${center.lng})["natural"="water"];way(around:${radius},${center.lat},${center.lng})["waterway"];way(around:${radius},${center.lat},${center.lng})["leisure"="nature_reserve"];way(around:${radius},${center.lat},${center.lng})["boundary"="protected_area"];way(around:${radius},${center.lat},${center.lng})["amenity"="prison"];way(around:${radius},${center.lat},${center.lng})["power"="plant"];rel(around:${radius},${center.lat},${center.lng})["access"~"^(no|private|customers|permit)$"];rel(around:${radius},${center.lat},${center.lng})["building"]["building"!="no"];rel(around:${radius},${center.lat},${center.lng})["landuse"="military"];rel(around:${radius},${center.lat},${center.lng})["natural"="water"];rel(around:${radius},${center.lat},${center.lng})["waterway"];rel(around:${radius},${center.lat},${center.lng})["leisure"="nature_reserve"];rel(around:${radius},${center.lat},${center.lng})["boundary"="protected_area"];rel(around:${radius},${center.lat},${center.lng})["amenity"="prison"];rel(around:${radius},${center.lat},${center.lng})["power"="plant"];);out tags geom;`;
   let response;
   try {
@@ -86,8 +86,8 @@ export async function findSafeItemLocations(center,radius,fetchImpl=fetch) {
       const segment=segments[Math.floor(Math.random()*segments.length)]; if(!segment) break;
       const fraction=.15+Math.random()*.7;
       const point=destinationPoint(segment.a,segment.length*fraction,bearingDegrees(segment.a,segment.b));
-      if(distanceMeters(center,point)>radius-20 || blocked.some(p=>nearPolygon(point,p))) continue;
-      if(result.some(existing=>distanceMeters(existing.location,point)<80)) continue;
+      if(distanceMeters(center,point)>radius-Math.min(20,radius*.2) || blocked.some(p=>nearPolygon(point,p))) continue;
+      if(result.some(existing=>distanceMeters(existing.location,point)<Math.min(80,radius*.7))) continue;
       const value={location:point};
       if(segment.level!==null && /^[+-]?\d{1,2}(?:\.\d+)?$/.test(String(segment.level))) value.level=Number(segment.level);
       if(segment.layer!==null && /^[+-]?\d{1,2}(?:\.\d+)?$/.test(String(segment.layer))) value.layer=Number(segment.layer);
