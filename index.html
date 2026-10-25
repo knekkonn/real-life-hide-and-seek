@@ -44,7 +44,7 @@
           <div class="card-topline"><span class="tiny-label">OPERATIONS CENTER</span><span class="status-pill"><i></i> BEREIT</span></div>
           <h2>Mission starten</h2>
           <p class="muted">Erstelle eine Lobby oder tritt einem laufenden Einsatz bei.</p>
-          <form id="entryForm" class="entry-form">
+          <p id="pendingStatus" class="hidden" role="status">Beitritt angefragt. Warte auf die Freigabe des Hosts. Über „Verlassen“ kannst du abbrechen.</p><form id="entryForm" class="entry-form">
             <label for="playerName">Dein Codename</label>
             <input id="playerName" name="playerName" maxlength="18" minlength="2" placeholder="z. B. NIGHTHAWK" autocomplete="nickname" required>
             <div class="entry-actions">
@@ -76,7 +76,7 @@
               <div class="setting-row role-count-setting"><div><label for="seekerCount">Rollenverteilung</label><small><span id="hiderCountValue">2</span> Hider werden automatisch zugeteilt</small></div><div class="select-wrap"><select id="seekerCount" aria-label="Anzahl der anfänglichen Seeker"><option value="1">1 Seeker</option><option value="2">2 Seeker</option><option value="3">3 Seeker</option><option value="4">4 Seeker</option><option value="5">5 Seeker</option><option value="6">6 Seeker</option><option value="7">7 Seeker</option><option value="8">8 Seeker</option><option value="9">9 Seeker</option><option value="10">10 Seeker</option></select></div></div>
               <div class="setting-row"><div><label for="hideDuration">Versteck-Phase</label><small>Vorsprung für Hider</small></div><div class="stepper"><button type="button" data-step="hideDuration" data-delta="-60" aria-label="Versteckphase reduzieren">−</button><output id="hideDurationValue">03:00</output><button type="button" data-step="hideDuration" data-delta="60" aria-label="Versteckphase erhöhen">＋</button></div></div>
               <div class="setting-row"><div><label for="gameDuration">Gesamtspieldauer</label><small>Nach Ende der Versteck-Phase</small></div><div class="stepper"><button type="button" data-step="gameDuration" data-delta="-300" aria-label="Spieldauer reduzieren">−</button><output id="gameDurationValue">20:00</output><button type="button" data-step="gameDuration" data-delta="300" aria-label="Spieldauer erhöhen">＋</button></div></div>
-              <div class="setting-row radius-setting"><div><label for="mapRadius">Spielradius</label><small>Ausgehend vom Host-Standort</small></div><div class="radius-value"><input id="mapRadius" type="range" min="100" max="1500" step="50" value="500"><output id="mapRadiusValue">500 m</output></div></div>
+              <div class="setting-row radius-setting"><div><label for="mapRadius">Spielradius</label><small>Ausgehend vom Host-Standort</small></div><div class="radius-value"><input id="mapRadius" type="range" min="100" max="2000" step="50" value="500"><output id="mapRadiusValue">500 m</output></div></div>
               <div class="settings-divider"></div>
               <div class="subsection-title"><span>▣</span><div><strong>Fähigkeiten-Pool</strong><small>Wähle, welche Skills verfügbar sind</small></div></div>
               <div class="skill-toggles" id="skillToggles">
@@ -96,7 +96,7 @@
               <div class="settings-divider"></div>
               <label class="toggle-line announcement-toggle"><span><b>Gefangen-Meldungen</b><small>Banner und Alarm-Sound für alle Spieler</small></span><input id="announcementsToggle" type="checkbox" checked><i></i></label>
             </div>
-            <div id="guestSettingsNote" class="guest-note hidden">Nur der Host kann die Einstellungen ändern.</div>
+            <div class="surface zone-preview"><h3>Spielzone</h3><p id="lobbyZoneInfo">Host: Mittelpunkt durch Tippen wählen oder Marker verschieben.</p><div id="lobbyMap" aria-label="Spielzone auswählen"></div><button type="button" id="lobbyGpsBtn" class="button button-secondary">◎ GPS ausdrücklich freigeben</button><p>GPS wird nach Freigabe an das konfigurierte Backend übertragen. Im sicheren Worker-Modus werden fremde Positionen nur während berechtigter Fähigkeiten freigegeben. Ohne Worker ist dies eine ungeschützte Testversion.</p></div><div id="joinRequests" aria-live="polite"></div><div id="guestSettingsNote" class="guest-note hidden">Nur der Host kann die Einstellungen ändern.</div>
           </div>
           <aside class="surface team-panel">
             <div class="section-heading"><div><span class="section-index">02 /</span><h2>Dein Team</h2></div><span class="player-count" id="lobbyPlayerCount">1 / 20</span></div>
@@ -146,7 +146,7 @@
             <div id="catchPanel" class="surface catch-panel"><div class="catch-panel-top"><span class="catch-icon">⊕</span><div><h2>Hider gefangen?</h2><p>Nur bei tatsächlicher Begegnung melden.</p></div></div><button id="catchBtn" class="button button-danger full-width" type="button">Fang bestätigen <span>↗</span></button><small>Der Hider muss den Fang auf seinem Gerät bestätigen.</small></div>
           </aside>
         </div>
-        <div id="spectatorBanner" class="spectator-banner hidden"><strong>MISSION ENDED FOR YOU</strong><span>Du bist Zuschauer. Verfolge den Spielstand, bis die Runde endet.</span></div>
+        <p id="gpsStatus" class="surface gps-status" role="status">GPS nicht verfügbar</p><div id="spectatorBanner" class="spectator-banner hidden"><strong>MISSION ENDED FOR YOU</strong><span>Du bist Zuschauer. Verfolge den Spielstand, bis die Runde endet.</span></div>
       </section>
     </main>
 

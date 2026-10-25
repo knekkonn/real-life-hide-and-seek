@@ -17,3 +17,7 @@ export const FIREBASE_ENABLED = !Object.values(firebaseConfig).some((value) =>
 export const MAX_PLAYERS = 20;
 export const MIN_PLAYERS = 2;
 export const ROOM_PATH = "hideSeekRooms";
+
+// Optional trusted Cloudflare Worker origin. See BACKEND.md before enabling.
+// Empty preserves the legacy Firebase development path; do not use it publicly.
+export const WORKER_URL = '';

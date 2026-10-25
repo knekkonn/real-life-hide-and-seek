@@ -1,5 +1,5 @@
 import { SKILLS } from './skills.js';
-import { now, distanceMeters, bearingDegrees, formatTime } from './utils.js';
+import { escapeHTML, now, distanceMeters, bearingDegrees, formatTime } from './utils.js';
 
 let map = null;
 let radiusCircle = null;
@@ -22,7 +22,7 @@ export function initMap() {
   map = L.map(mapElement, { zoomControl:true, preferCanvas:true, zoomSnap:.5 }).setView([52.52,13.405], 12);
   L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
     attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
-    subdomains:'abcd', maxZoom:20
+    subdomains:'abc', maxZoom:20
   }).addTo(map);
   map.on('load', () => {});
   compassOverlay = document.createElement('div');
@@ -44,6 +44,7 @@ export function centerMap(location) {
 function putMarker(id, point, kind, label, detail='') {
   if (!map || !point || !Number.isFinite(point.lat) || !Number.isFinite(point.lng)) return;
   const existing = mapMarkers.get(id);
+  label = escapeHTML(label || '');
   const popupHtml = label ? `<strong>${label}</strong>${detail ? `<br>${detail}` : ''}` : '';
   if (existing) {
     existing.setLatLng([point.lat, point.lng]);
@@ -102,7 +103,7 @@ export function updateMap(room, selfId, ownLocation, role) {
   const itemBoxes = Object.values(room.itemBoxes || {}).filter((box) => !box.collected);
 
   for (const player of players) {
-    if (!player.location || !player.active) continue;
+    if (!player.location || !player.active || now() - player.locationAt > 10000) continue;
     if (player.id === selfId) continue;
     let show = false;
     let kind = player.role === 'seeker' ? 'seeker' : 'hider';
@@ -174,3 +175,36 @@ export function resetMap() {
 }
 
 export function getMap() { return map; }
+
+let lobbyMap = null;
+let lobbyCircle = null;
+let lobbyMarker = null;
+let lobbySelect = null;
+export function updateLobbyMap(room, host, onCenter) {
+  if (!window.L || !document.getElementById('lobbyMap')) return;
+  lobbySelect = host ? onCenter : null;
+  if (!lobbyMap) {
+    // World view is navigation only, never a player's position or actual zone.
+    lobbyMap = L.map('lobbyMap').setView([20,0], 2);
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {subdomains:'abc',maxZoom:20,attribution:'© OpenStreetMap © CARTO'}).addTo(lobbyMap);
+    lobbyMap.on('click', (event) => lobbySelect?.({lat:event.latlng.lat,lng:event.latlng.lng}));
+  }
+  const center = room.settings?.center;
+  document.getElementById('lobbyZoneInfo').textContent = center ? `Radius ${room.settings.radius} m · ${center.lat.toFixed(5)}, ${center.lng.toFixed(5)}${host ? ' · Tippen oder Marker ziehen' : ''}` : 'Noch kein Mittelpunkt. Host: Karte wählen oder GPS freigeben.';
+  if (center) {
+    if (!lobbyCircle) {
+      lobbyCircle = L.circle([center.lat,center.lng], {radius:room.settings.radius,color:'#b9ff52'}).addTo(lobbyMap);
+      lobbyMarker = L.marker([center.lat,center.lng], {draggable:host}).addTo(lobbyMap);
+      lobbyMarker.on('dragend', () => { const point = lobbyMarker.getLatLng(); lobbySelect?.({lat:point.lat,lng:point.lng}); });
+      lobbyMap.fitBounds(lobbyCircle.getBounds());
+    } else {
+      lobbyCircle.setLatLng([center.lat,center.lng]).setRadius(room.settings.radius);
+      lobbyMarker.setLatLng([center.lat,center.lng]);
+    }
+    if (host) lobbyMarker.dragging.enable(); else lobbyMarker.dragging.disable();
+  }
+  setTimeout(() => lobbyMap?.invalidateSize(), 0);
+}
+export function resetLobbyMap() {
+  lobbyMap?.remove(); lobbyMap = null; lobbyCircle = null; lobbyMarker = null; lobbySelect = null;
+}

@@ -1,0 +1,15 @@
+name = "real-life-hide-and-seek-api"
+main = "index.js"
+compatibility_date = "2026-10-01"
+
+[vars]
+ALLOWED_ORIGIN = "https://knekkonn.github.io"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "hide-and-seek"
+database_id = "REPLACE_WITH_CREATED_D1_ID"
+migrations_dir = "migrations"
+
+[triggers]
+crons = ["0 * * * *"]
