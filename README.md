@@ -22,7 +22,7 @@ Eine responsive, PWA-fähige Web-App für ein GPS-basiertes Real-Life-Hide-and-S
 - Host-Einstellungen: Classic/Infiziert, Versteckzeit, Matchdauer, Spielradius, Skill-Pool und Gefangen-Meldungen
 - Synchronisierte Countdown-, Rollen-Enthüllungs-, Versteck-, Live-Match- und Endphase
 - Leaflet-Karte mit kostenlosen OpenStreetMap-Kacheln ohne API-Key, dunkler Kartenansicht, Spielradius, GPS-Punkt, Feldzielen, Signal Caches, Täusch-Markern und Fallen
-- Hider-Aufgaben mit servergeprüften Zielpunkten und Haltezeiten, Vigenère-/Transpositionsrätsel, einem Versteckfoto pro Runde, Fehlversuch-Cooldown und einmaligen Belohnungen (Worker erforderlich)
+- Rollenbezogene Hider-/Seeker-Aufgaben mit servergeprüften GPS-Zielen und Nähe, geführtem Vigenère-Rätsel, Versteckfoto pro Runde, Fehlversuch-Cooldown und einmaligen Belohnungen (Worker erforderlich)
 - Seeker-/Hider-Arsenal, Münzen, Skill-Inventar, sofortiger Fang bei höchstens 5 m GPS-Abstand, Rollenwechsel und Ingame-Banner
 - Classic-Zuschauerstatus, Infiziert-Rollenwechsel und Ingame-Banner
 - Soundeffekte über Web Audio API, optionale Vibration, Reconnect-Feedback, GPS-Fehlerzustände

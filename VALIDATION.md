@@ -13,6 +13,7 @@ Stand: 25. Oktober 2026. Worker und EU-D1 sind provisioniert; die Geräte-Abnahm
 - Worker-Autorisierung, gefilterte Positionen, Geist-/Sonar-/Kompassverhalten, direkten Beitritt mit Namens-/Raumgrößenprüfung, sofortigen Fang mit 5-m-Grenze, OSM-Cache-Prüfung und Aufgabenbelohnung.
 - Tatsächliche SQLite-Abfragen aus dem Worker über einen lokalen D1-Testadapter, inklusive konkurrierender direkter Beitritte und Mitgliedschaftsschutz. Firebase-Tokenantworten sind in diesem Integrationstest simuliert.
 - Serverseitige GPS-Verstoßzählung, keine Strafe aus Datenlücken, dritte Strafe.
+- Veraltete Browser-GPS-Zeitstempel werden beim Empfang durch eine aktuelle Messzeit ersetzt; Seeker-Cache- und Näheaufgaben werden serverseitig geprüft.
 - `git diff --check`.
 - Cloudflare-Konto, D1 EU-Datenbank, angewendetes Schema, Worker-Upload, D1-Bindung, `workers.dev`-Route und stündlichen Cron-Trigger per Cloudflare API geprüft.
 
