@@ -1,7 +1,7 @@
 import { evaluateZone } from './gps.js';
 import { initBackend, getBackendMode, getPlayerUid, createRoom, getRoom, mutateRoom, subscribeRoom, subscribeConnection, workerCommand, fetchRoundPhoto } from './backend.js';
 import { MAX_PLAYERS, MIN_PLAYERS } from './config.js';
-import { SKILLS, SKILL_IDS, DEFAULT_SETTINGS } from './skills.js';
+import { SKILLS, SKILL_IDS, DEFAULT_SETTINGS, skillTuning } from './skills.js';
 import {
   createRoomData, addPlayerToRoom, updateSettings, startCountdown, advanceExpiredPhase,
   maybePayTimeReward, updatePlayerLocation, requestCatch, buySkill,
@@ -15,7 +15,7 @@ const state = {
   uid:null, playerName:'', roomCode:null, room:null, unsubscribe:null, connected:true,
   ownLocation:null, watchId:null, gpsPending:false, lastLocationWrite:0,
   lastAnnouncementId:null, lastSeekerSideAnnouncementId:null, subscriptionStartedAt:0, seenCatchRequest:null,
-  revealDismissedPhase:null, lastCountdownSecond:null, currentTab:'mapTab',
+  revealDismissedPhase:null, lastCountdownSecond:null, currentTab:'mapTab', lastCelebratedRoundId:null,
   audioOn:true, tickHandle:null, passiveRewardAt:0, shakeHandler:null, shakeTimer:null,
   shakeCount:0, shakeTarget:10, challengeDone:false, pendingTimer:null,
   roundPhotoUrls:new Map(), roundPhotoLoads:new Set(), roundPhotoFailures:new Map()
@@ -41,6 +41,13 @@ function toast(title, message='', type='info', duration=3800) {
   el.innerHTML = `<span class="toast-symbol">${symbols[type] || symbols.info}</span><div><strong>${escapeHTML(title)}</strong>${message ? `<p>${escapeHTML(message)}</p>` : ''}</div>`;
   region.appendChild(el);
   window.setTimeout(() => { el.style.opacity='0'; el.style.transform='translateX(8px)'; window.setTimeout(() => el.remove(), 230); }, duration);
+}
+
+function showMoment(title, detail='', type='start', icon='✦', duration=2400) {
+  const overlay=$('momentOverlay'); if(!overlay) return;
+  $('momentTitle').textContent=title; $('momentDetail').textContent=detail; $('momentKicker').textContent=type==='caught'?'OPERATIVE FOUND':type==='catch'?'TARGET SECURED':type==='win'?'VICTORY CONFIRMED':'MISSION UPDATE'; $('momentIcon').textContent=icon;
+  overlay.classList.toggle('is-caught',type==='caught'); overlay.classList.remove('hidden');
+  clearTimeout(state.momentTimer); state.momentTimer=window.setTimeout(()=>overlay.classList.add('hidden'),duration);
 }
 
 function openModal({ kicker='FIELD PROTOCOL', title='Bestätigung', body='', actions=[], closeable=true }) {
@@ -278,6 +285,7 @@ function attachRoomListener() {
     if (!room.players?.[state.uid] || room.players[state.uid].status === 'left') { localExit(); return; }
     $('pendingStatus').classList.add('hidden');
     const priorPhase = state.room?.phase;
+    const priorRole = state.room?.players?.[state.uid]?.role;
     state.room = room;
     const self = getSelf();
     // Persisted coordinates are not a fresh device measurement.
@@ -286,6 +294,8 @@ function attachRoomListener() {
     handleAnnouncement(room);
     handleEffects(room);
     if (priorPhase !== room.phase) onPhaseChanged(room.phase);
+    if(priorRole==='hider' && self.role==='spectator') showMoment('Du wurdest gefunden','Deine Runde ist vorbei. Die Rundenwertung bleibt sichtbar.','caught','⊗',3200);
+    else if(priorRole==='hider' && self.role==='seeker') showMoment('Du wurdest infiziert','Jetzt hilfst du dem Suchteam bei der Jagd.','catch','ϟ',3000);
   }, (error) => {
     console.error('Room listener error', error);
     state.connected = false;
@@ -322,8 +332,8 @@ function onPhaseChanged(phase) {
     if (currentRole() === 'seeker') Sound.startTension();
     else Sound.go();
   } else Sound.stopTension();
-  if (phase === 'playing') { Sound.go(); haptic([30,50,30]); }
-  if (phase === 'finished' && state.lastEndSoundPhase !== 'finished') { state.lastEndSoundPhase='finished'; Sound.alert(); haptic([70,80,70]); }
+  if (phase === 'playing') { Sound.go(); haptic([30,50,30]); showMoment('Die Jagd beginnt','Das Spielfeld ist freigegeben. Bleib aufmerksam.','start','⚡',2800); }
+  if (phase === 'finished' && state.lastEndSoundPhase !== 'finished') { state.lastEndSoundPhase='finished'; Sound.alert(); haptic([70,80,70]); const won=state.room?.winner==='hiders'&&currentRole()==='hider'||state.room?.winner==='seekers'&&currentRole()==='seeker'; showMoment(won?'Sieg!':'Runde beendet',state.room?.winner==='hiders'?'Die Hider haben bis zum Ende durchgehalten.':'Das Suchteam hat die Hider gefunden.','win','✦',3200); }
   if (phase === 'lobby') state.lastEndSoundPhase=null;
   if (phase==='lobby' || phase==='finished') releaseRoundPhotos();
 }
@@ -414,6 +424,7 @@ function renderGame() {
     $('winnerMessage').textContent=localWinner==='hiders' ? 'Die Hider haben bis zum Ende durchgehalten.' : 'Das Suchteam hat die Runde beendet.';
     $('newRoundBtn').classList.toggle('hidden', !isHost());
     $('postRoundSettingsBtn').classList.toggle('hidden', !isHost());
+    renderRoundResults(room);
   }
   renderRoundPhotoGallery(room,role);
   $('gameModeTag').textContent = room.settings.mode === 'infected' ? 'INFECTED MODE' : 'CLASSIC MODE';
@@ -427,6 +438,7 @@ function renderGame() {
   $('operativeRole').className = `role-chip ${role === 'seeker' ? 'role-seeker' : role === 'spectator' ? 'role-spectator' : 'role-hider'}`;
   $('roleChip').textContent = $('operativeRole').textContent;
   $('operativeCoins').textContent = String(self.coins || 0);
+  $('operativeScore').textContent = String(self.score || 0);
   $('coinBadge').textContent = `${self.coins || 0} ◈`;
   $('shopCoinCounter').textContent = `${self.coins || 0} ◈`;
   $('operativeItems').textContent = String((self.inventory || []).length);
@@ -545,9 +557,11 @@ function renderShop() {
     $('shopGrid').innerHTML = '<div class="empty-state">Der Host hat alle Fähigkeiten dieser Rolle deaktiviert.</div>';
   } else {
     $('shopGrid').innerHTML = available.map((skill) => {
+      const tuned=skillTuning(skill.id,state.room.settings.radius);
       const phaseAllowed = state.room.phase === 'playing' || (side === 'hider' && state.room.phase === 'hide');
-      const disabled = !phaseAllowed || Number(self.coins || 0) < skill.price;
-      return `<article class="shop-item"><div class="shop-item-top"><span class="shop-item-icon">${SKILL_ICONS[skill.id] || skill.icon}</span><span class="shop-price">◈ ${skill.price}</span></div><span class="shop-side-label">${side === 'seeker' ? 'SEEKER TECH' : 'HIDER TECH'}</span><h3>${escapeHTML(skill.short)}</h3><p>${escapeHTML(skill.description)}</p><button class="button button-secondary" data-buy-skill="${skill.id}" type="button" ${disabled ? 'disabled' : ''}>${phaseAllowed ? 'Kaufen' : 'Später verfügbar'} <span>→</span></button></article>`;
+      const disabled = !phaseAllowed || Number(self.coins || 0) < tuned.price;
+      const effect=skill.id==='sweeper'?`Räumradius ${tuned.sweepRadius} m`:skill.id==='trap'?`EMP-Radius ${tuned.trapRadius} m · ${tuned.duration*6} s`:skill.id==='decoy'?`Marker bis ${tuned.decoyRange} m vom Zentrum · ${tuned.duration} s`:tuned.duration?`${tuned.duration} Sekunden Wirkung`:'Einmaliger Schutz';
+      return `<article class="shop-item"><div class="shop-item-top"><span class="shop-item-icon">${SKILL_ICONS[skill.id] || skill.icon}</span><span class="shop-price">◈ ${tuned.price}</span></div><span class="shop-side-label">${side === 'seeker' ? 'SEEKER TECH' : 'HIDER TECH'} · ZONE ${state.room.settings.radius} M</span><h3>${escapeHTML(skill.short)}</h3><p>${escapeHTML(skill.description)} <strong>${effect}</strong></p><button class="button button-secondary" data-buy-skill="${skill.id}" type="button" ${disabled ? 'disabled' : ''}>${phaseAllowed ? 'Kaufen' : 'Später verfügbar'} <span>→</span></button></article>`;
     }).join('');
     $('shopGrid').querySelectorAll('[data-buy-skill]').forEach((button) => button.addEventListener('click', async () => {
       const result = await buySkill(state.roomCode, state.uid, button.dataset.buySkill);
@@ -582,15 +596,21 @@ function renderNearbyItems() {
 
 function renderLeaderboard() {
   const players = Object.values(state.room.players || {}).slice().sort((a,b) => {
-    const scoreA = (a.active ? 1000 : 0) + (Number(a.coins)||0) + (Number(a.foundItems)||0)*10 + (Number(a.tasksSolved)||0)*25;
-    const scoreB = (b.active ? 1000 : 0) + (Number(b.coins)||0) + (Number(b.foundItems)||0)*10 + (Number(b.tasksSolved)||0)*25;
+    const scoreA = Number(a.score)||0;
+    const scoreB = Number(b.score)||0;
     return scoreB - scoreA;
   });
   $('leaderboard').innerHTML = players.map((player,index) => {
     const role = player.role === 'seeker' ? (player.status === 'infected' ? 'INFIZIERT' : 'SEEKER') : player.role === 'hider' ? 'AKTIV / HIDER' : player.role === 'spectator' ? 'GEFANGEN' : player.status || 'LOBBY';
     const pct = clamp((Number(player.coins)||0) / 100 * 100, 0,100);
-    return `<div class="lobby-player"><span class="rank-number">${String(index+1).padStart(2,'0')}</span><div class="player-avatar">${escapeHTML((player.name||'?').slice(0,1).toUpperCase())}</div><div class="player-meta"><strong>${displayName(player)}${player.id === state.uid ? ' · DU' : ''}</strong><small>${role} · ${player.foundItems || 0} CACHES · ${player.tasksSolved || 0} TASKS</small><div class="rank-bar"><span style="width:${pct}%"></span></div></div><span class="player-tag">${player.coins || 0} ◈</span></div>`;
+    return `<div class="lobby-player"><span class="rank-number">${String(index+1).padStart(2,'0')}</span><div class="player-avatar">${escapeHTML((player.name||'?').slice(0,1).toUpperCase())}</div><div class="player-meta"><strong>${displayName(player)}${player.id === state.uid ? ' · DU' : ''}</strong><small>${role} · ${player.score||0} PUNKTE · ${player.hidersFound||0} FÄNGE · ${player.skillsUsed||0} SKILLS</small><div class="rank-bar"><span style="width:${pct}%"></span></div></div><span class="player-tag">${player.coins || 0} ◈</span></div>`;
   }).join('');
+}
+
+function renderRoundResults(room) {
+  const awards=room.roundAchievements||[]; const results=room.roundResults||[];
+  $('roundAwards').innerHTML=awards.map((award,i)=>{const winner=room.players?.[award.playerId];return `<div class="award-chip" style="animation-delay:${i*90}ms"><strong>🏅 ${escapeHTML(award.title)}</strong><small>${escapeHTML(winner?.name||'Operative')} · ${escapeHTML(award.detail)}</small></div>`}).join('')||'<p class="muted">Noch keine Auszeichnungen in dieser Runde.</p>';
+  $('roundLeaderboard').innerHTML=`<h3>Runden-Bestenliste</h3>${results.map((player,i)=>`<div class="round-result-row" style="animation-delay:${i*55}ms"><span class="rank-number">${String(i+1).padStart(2,'0')}</span><div><strong>${escapeHTML(player.name||'Operative')}</strong><small>${player.hidersFound||0} Fänge · ${player.skillsUsed||0} Skills · ${Math.floor((player.longestStaySeconds||0)/60)} Min. am selben Ort</small></div><b>${player.score||0} P</b></div>`).join('')}`;
 }
 
 function selectTab(tabId) {
@@ -711,6 +731,11 @@ function handleAnnouncement(room) {
   if (/CAPTURED|INFECTED|LOCKDOWN|CATCH CONFIRMATION|SPRINT ALARM/.test(announcement.title || '')) { Sound.alert(); haptic([25,40,25]); }
   else if (/SECURED|COMPLETE|ACQUIRED/.test(announcement.title || '')) { Sound.item(); haptic(25); }
   else Sound.click();
+  if(announcement.title==='PLAYER CAPTURED') {
+    if(announcement.actorId===state.uid) showMoment('Fang bestätigt',announcement.message,'catch','⊕',3000);
+    else if(announcement.targetId===state.uid) showMoment('Du wurdest gefunden',announcement.message,'caught','⊗',3200);
+    else showMoment('Operative gefunden',announcement.message,'catch','⊕',2600);
+  }
 }
 
 function handleEffects(room) {
@@ -903,7 +928,7 @@ function tick() {
   }
   if (room.phase === 'playing') {
     const self = getSelf();
-    if (self?.role === 'seeker' && self.active && now() - state.passiveRewardAt > 25_000) {
+    if (self?.role === 'hider' && self.active && now() - state.passiveRewardAt > 25_000) {
       state.passiveRewardAt = now();
       maybePayTimeReward(state.roomCode,state.uid).catch(() => {});
     }

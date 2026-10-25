@@ -3,6 +3,7 @@ import { normalizeRoom } from '../js/transactions.js';
 import { evaluateZone, validPoint } from '../js/gps.js';
 import { distanceMeters, bearingDegrees, destinationPoint } from '../js/utils.js';
 import { findSafeItemLocations } from './itembox.js';
+import { skillTuning } from '../js/skills.js';
 
 export function publicRoom(source, uid, timestamp=Date.now()) {
   const room = structuredClone(source);
@@ -43,6 +44,7 @@ export function publicRoom(source, uid, timestamp=Date.now()) {
     }
     // Public score/role remain visible; private inventory, effects and zone evidence do not.
     delete player.inventory; delete player.effects; delete player.zone; delete player.previousStatus; delete player.activeTask; delete player.taskCooldownUntil;
+    delete player._stayAnchor; delete player.stationarySince; delete player.rewardAt; delete player.hiderStartedAt;
     if (player.id === uid) { /* own task and cooldown remain private to the requesting player */ }
   }
   room.traps = Object.fromEntries(Object.entries(room.traps || {}).filter(([,trap]) => trap.ownerId === uid));
@@ -72,6 +74,7 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
   }
   if (action === 'leaveRoom' && room.joinRequests?.[uid] && !room.players[uid]) { delete room.joinRequests[uid]; return {room,result:true}; }
   const player = member(room,uid);
+  if(room.phase==='playing') game.awardElapsedHiderPoints(room,Math.min(timestamp,Number(room.matchEndsAt)||timestamp));
   if (room.phase === 'playing' && (player.effects?.frozenUntil || 0)>timestamp && !['updatePlayerLocation','leaveRoom'].includes(action)) throw new Error('FROZEN');
   if (room.phase === 'closed' && action !== 'leaveRoom') throw new Error('LOBBY_CLOSED');
   if (action === 'approveJoin') {
@@ -89,7 +92,8 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
     room.challenges={}; room.itemBoxes={}; room.objectives={}; room.traps={}; room.decoys={}; room.effects={}; room.photoMetadata={};
     for (const [id,p] of Object.entries(room.players)) if (!p.active || p.status==='left') delete room.players[id];
     room.roundId=crypto.randomUUID();
-    for (const p of Object.values(room.players)) { p.active=true; p.role='waiting'; p.status='waiting'; p.coins=0; p.inventory=[]; p.effects={}; p.location=null; p.locationAt=0; p.activeTask=null; p.taskCooldownUntil=0; p.foundItems=0; p.tasksSolved=0; p.zone={violations:0}; }
+    room.roundResults=[]; room.roundAchievements=[];
+    for (const p of Object.values(room.players)) { p.active=true; p.role='waiting'; p.status='waiting'; p.coins=0; p.score=0; p.hidersFound=0; p.skillsUsed=0; p.longestStaySeconds=0; p.hiddenSeconds=0; p.stationarySince=0; p._stayAnchor=null; p.hiderStartedAt=0; p.rewardAt=timestamp; p.inventory=[]; p.effects={}; p.location=null; p.locationAt=0; p.activeTask=null; p.taskCooldownUntil=0; p.foundItems=0; p.tasksSolved=0; p.zone={violations:0}; }
     return {room,result:true};
   }
   if (action === 'settings') { host(room,uid); return {room:game.updateSettings(room,uid,input.patch || {}),result:true}; }
@@ -137,7 +141,7 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
     }
     case 'buySkill': result=await game.buySkill(context,uid,input.skillId); break;
     case 'activateSkill': {
-      if (input.skillId === 'decoy' && (!validPoint(input.params?.location) || distanceMeters(input.params.location,room.settings.center) > room.settings.radius)) throw new Error('INVALID_POINT');
+      if (input.skillId === 'decoy' && (!validPoint(input.params?.location) || distanceMeters(input.params.location,room.settings.center) > skillTuning('decoy',room.settings.radius).decoyRange)) throw new Error('INVALID_POINT');
       if (['tracker','compass','trap','sweeper'].includes(input.skillId) && timestamp-(player.locationAt || 0)>10000) throw new Error('FRESH_GPS_REQUIRED');
       for (const candidate of Object.values(room.players)) if (candidate.id !== uid && timestamp-(candidate.locationAt || 0)>10000) candidate.location=null;
       result=await game.activateSkill(context,uid,input.skillId,input.params || {}); break;
@@ -229,6 +233,7 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
 
 export async function settlePhases(room, fetchImpl=fetch) {
   const context = {room};
+  game.awardElapsedHiderPoints(room,Math.min(Date.now(),Number(room.matchEndsAt)||Date.now()));
   for (let i=0;i<5;i++) {
     if (!context.room.phaseEndsAt || context.room.phaseEndsAt>Date.now()) break;
     const previous=context.room.phase;

@@ -7,6 +7,7 @@ import { applyAction, publicRoom, settlePhases } from '../worker/game.js';
 import { authenticate } from '../worker/auth.js';
 import { createRoomData, addPlayerToRoom } from '../js/game-service.js';
 import { findSafeItemLocations } from '../worker/itembox.js';
+import { skillTuning } from '../js/skills.js';
 
 function playing() {
   const room=createRoomData('host','HOST'); room.code='1234';
@@ -50,6 +51,41 @@ test('a verified in-range catch is applied immediately without target confirmati
   assert.equal(room.players.guest.status,'infected');
   await assert.rejects(applyAction(room,'guest',{action:'respondToCatch',accepted:true,requestId:'legacy'}),/UNKNOWN_ACTION/);
   await assert.rejects(applyAction(room,'host',{action:'requestCatch',targetId:'guest'}),/TARGET_NOT_CATCHABLE/);
+});
+
+test('hiders earn one point for each full minute exactly once on server settlement', async () => {
+  const room=playing(); const started=Date.now()-125000;
+  room.matchEndsAt=Date.now()+600000;
+  for(const player of [room.players.guest,room.players.other]) { player.hiderStartedAt=started; player.rewardAt=started; }
+  await applyAction(room,'guest',{action:'updatePlayerLocation',location:{lat:0,lng:0,accuracy:5,measuredAt:Date.now()}},started+125000);
+  assert.equal(room.players.guest.score,2);
+  assert.equal(room.players.guest.hiddenSeconds,120);
+  await applyAction(room,'guest',{action:'updatePlayerLocation',location:{lat:0,lng:0,accuracy:5,measuredAt:Date.now()}},started+125000);
+  assert.equal(room.players.guest.score,2,'repeated requests cannot duplicate paid minutes');
+  await applyAction(room,'host',{action:'updatePlayerLocation',location:{lat:0,lng:0,accuracy:5,measuredAt:Date.now()}},started+125000);
+  assert.equal(room.players.host.score,0,'seekers do not receive hider survival points');
+});
+
+test('every confirmed catch rewards the seeker and writes round awards and results', async () => {
+  const room=playing(); const started=Date.now()-125000;
+  room.matchEndsAt=Date.now()+600000;
+  for(const player of [room.players.guest,room.players.other]) { player.hiderStartedAt=started; player.rewardAt=started; }
+  await applyAction(room,'host',{action:'requestCatch',targetId:'guest'});
+  assert.equal(room.players.host.hidersFound,1);
+  assert.ok(room.players.host.coins>=30);
+  assert.ok(room.players.host.score>=50);
+  await applyAction(room,'host',{action:'requestCatch',targetId:'other'});
+  assert.equal(room.phase,'finished');
+  assert.ok(room.roundResults.some(row=>row.id==='host'&&row.hidersFound===2));
+  assert.ok(room.roundAchievements.some(award=>award.title==='Fangmaschine'&&award.playerId==='host'));
+  assert.ok(room.roundResults.find(row=>row.id==='guest').score>=2);
+});
+
+test('skill prices and active ranges follow strength and playzone scale', () => {
+  const compact=skillTuning('sweeper',200), wide=skillTuning('sweeper',1800);
+  assert.ok(wide.price>compact.price);
+  assert.ok(wide.sweepRadius>compact.sweepRadius);
+  assert.ok(skillTuning('shield',1000).price>skillTuning('sprint',1000).price,'stronger effects cost more');
 });
 test('catch requires fresh accurate positions within the allowed radius', async () => {
   const room=playing();
