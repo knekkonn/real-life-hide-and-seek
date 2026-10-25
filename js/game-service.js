@@ -143,6 +143,7 @@ export async function advanceExpiredPhase(code, room) {
       current.announcement = { id:randomId('announcement'), type:'system', title:'SEEK PHASE LIVE', message:'Die Jagd ist freigegeben. Signal Caches wurden aktiviert.', createdAt:timestamp };
     } else if (current.phase === 'playing') {
       current.phase = 'finished';
+      current.winner = 'hiders';
       current.phaseEndsAt = null;
       current.announcement = { id:randomId('announcement'), type:'system', title:'MISSION COMPLETE', message:'Der Countdown ist abgelaufen. Einsatz beendet.', createdAt:timestamp };
     } else return null;
@@ -257,6 +258,7 @@ export async function respondToCatch(code, targetId, accepted, requestId=null) {
     room.announcement = announcementText ? { id:randomId('announcement'), type:'global', title:'PLAYER CAPTURED', message:announcementText, createdAt:timestamp, targetId:null } : { id:randomId('announcement'), type:'private', targetId:request.seekerId, title:'CATCH CONFIRMED', message:`${target.name} wurde als gefangen bestätigt.`, createdAt:timestamp };
     if (nowHiders.length === 0) {
       room.phase = 'finished';
+      room.winner = 'seekers';
       room.phaseEndsAt = null;
       room.announcement = { id:randomId('announcement'), type:'global', title:'MISSION COMPLETE', message:room.settings.mode === 'infected' ? 'Alle Hider wurden infiziert.' : 'Alle Hider wurden gefangen.', createdAt:timestamp };
     }

@@ -145,14 +145,31 @@ async function workerRequest(path, body) {
   const data = await response.json();
   connectionListener?.(true);
   if (!response.ok) {
-    const messages={NOT_MEMBER:'Du bist noch kein bestätigtes Raum-Mitglied.',HOST_ONLY:'Nur der Host darf diese Aktion ausführen.',LOBBY_CLOSED:'Der Raum ist geschlossen oder läuft bereits.',ROOM_EXPIRED:'Der Raum ist abgelaufen.',STALE_CATCH:'Diese Fanganfrage ist nicht mehr gültig.',RATE_LIMIT:'Zu viele Aktionen. Bitte kurz warten.',CENTER_REQUIRED:'Bitte zuerst einen Zonenmittelpunkt wählen.',FRESH_GPS_REQUIRED:'Eine aktuelle, genaue GPS-Messung wird benötigt.',TASK_COOLDOWN:'Bitte vor einer neuen Aufgabe kurz warten.',INVALID_CHALLENGE:'Die Aufgabe ist abgelaufen, zu früh gelöst oder wurde bereits vergütet.',WRONG_ANSWER:'Diese Antwort ist nicht korrekt.',FROZEN:'Spielaktionen sind während der Sperrzeit nicht verfügbar.',CODE_IN_USE:'Dieser Raumcode ist bereits vergeben.',UNAUTHENTICATED:'Die Anmeldung ist abgelaufen. Bitte erneut anmelden.'};
+    const messages={TASK_LOCATION_REQUIRED:'Erreiche das markierte Ziel mit genauer GPS-Messung; dieser Versuch ist fehlgeschlagen.',TASK_NOT_HELD:'Du hast den Ort verlassen oder warst zu lange offline; dieser Versuch ist fehlgeschlagen.',TASK_EXPIRED:'Zeit abgelaufen; dieser Versuch ist fehlgeschlagen.',TASK_TOO_FAST:'Die Chiffre wurde zu schnell eingereicht; der Versuch ist fehlgeschlagen.',WRONG_ANSWER:'Falsche Antwort; dieser Versuch ist fehlgeschlagen.',INVALID_PHOTO:'Das Bild muss ein kleines JPEG ohne EXIF-Daten sein; der Versuch ist fehlgeschlagen.',PHOTO_ALREADY_SUBMITTED:'Für diese Runde wurde bereits ein Foto eingereicht.',INVALID_CHALLENGE:'Challenge fehlgeschlagen oder abgelaufen.',NOT_MEMBER:'Du bist noch kein bestätigtes Raum-Mitglied.',HOST_ONLY:'Nur der Host darf diese Aktion ausführen.',LOBBY_CLOSED:'Der Raum ist geschlossen oder läuft bereits.',ROOM_EXPIRED:'Der Raum ist abgelaufen.',STALE_CATCH:'Diese Fanganfrage ist nicht mehr gültig.',RATE_LIMIT:'Zu viele Aktionen. Bitte kurz warten.',CENTER_REQUIRED:'Bitte zuerst einen Zonenmittelpunkt wählen.',FRESH_GPS_REQUIRED:'Eine aktuelle, genaue GPS-Messung wird benötigt.',TASK_COOLDOWN:'Bitte vor einer neuen Aufgabe kurz warten.',FROZEN:'Spielaktionen sind während der Sperrzeit nicht verfügbar.',CODE_IN_USE:'Dieser Raumcode ist bereits vergeben.',UNAUTHENTICATED:'Die Anmeldung ist abgelaufen. Bitte erneut anmelden.'};
     throw new Error(messages[data.error] || data.error || `Backend: ${response.status}`);
   }
   if (data.serverTime) setServerTimeOffset(data.serverTime - (started + Date.now()) / 2);
   return data;
 }
 export async function workerCommand(code, action, payload={}) {
-  return workerRequest(`/rooms/${code}`, {action,...payload});
+  const data=await workerRequest(`/rooms/${code}`, {action,...payload});
+  if(data.result?.error) { const codes={TASK_TOO_FAST:'Zu schnell gelöst; der Versuch ist fehlgeschlagen.',WRONG_ANSWER:'Falsche Antwort; der Versuch ist fehlgeschlagen.',TASK_LOCATION_REQUIRED:'GPS-Ziel nicht erreicht; der Versuch ist fehlgeschlagen.',TASK_NOT_HELD:'Position nicht gehalten; der Versuch ist fehlgeschlagen.',TASK_EXPIRED:'Zeit abgelaufen; der Versuch ist fehlgeschlagen.',INVALID_PHOTO:'Das Foto ist zu groß oder enthält unzulässige Metadaten; der Versuch ist fehlgeschlagen.'}; const err=new Error(codes[data.result.error] || data.result.error); err.code=data.result.error; throw err; }
+  return data;
+}
+export async function fetchRoundPhoto(code, playerId) {
+  requireBackend();
+  if(!WORKER_URL || backendMode!=='worker') throw new Error('Rundenfotos benötigen das Worker-Backend.');
+  const token=await auth.currentUser.getIdToken();
+  let response;
+  try { response=await fetch(`${WORKER_URL.replace(/\/$/,'')}/rooms/${code}/photos/${encodeURIComponent(playerId)}`,{headers:{Authorization:`Bearer ${token}`},cache:'no-store',signal:AbortSignal.timeout(15000)}); }
+  catch(error) { connectionListener?.(false); throw error; }
+  connectionListener?.(true);
+  if(!response.ok) {
+    const data=await response.json().catch(()=>({}));
+    const messages={PHOTO_NOT_AVAILABLE:'Dieses Rundenfoto ist nicht mehr verfügbar.',UNAUTHENTICATED:'Die Anmeldung ist abgelaufen.'};
+    throw new Error(messages[data.error] || 'Foto konnte nicht geladen werden.');
+  }
+  return response.blob();
 }
 function callAction(action, args) {
   const [code, , third, fourth] = args;

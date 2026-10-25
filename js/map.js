@@ -20,9 +20,9 @@ export function initMap() {
   if (!mapElement || !window.L) return null;
   if (map) return map;
   map = L.map(mapElement, { zoomControl:true, preferCanvas:true, zoomSnap:.5 }).setView([52.52,13.405], 12);
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-    attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
-    subdomains:'abc', maxZoom:20
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap-Mitwirkende</a>',
+    subdomains:'abc', maxZoom:19
   }).addTo(map);
   map.on('load', () => {});
   compassOverlay = document.createElement('div');
@@ -83,6 +83,11 @@ export function updateMap(room, selfId, ownLocation, role) {
   const allowed = new Set();
   const players = Object.values(room.players || {});
   const self = room.players?.[selfId];
+  if (self?.activeTask?.kind === 'visit' && !self.activeTask.failed && !self.activeTask.completed && self.activeTask.targetLocation && ['hide','playing'].includes(room.phase)) {
+    const id = `task-target:${selfId}`;
+    allowed.add(id);
+    putMarker(id, self.activeTask.targetLocation, 'cache', 'Geheimer Feldzielpunkt', 'Nur für dich sichtbar · Nähe erforderlich');
+  }
   if (ownLocation) {
     allowed.add(`player:${selfId}`);
     putMarker(`player:${selfId}`, ownLocation, 'self', 'Deine Position', 'GPS aktiv');
@@ -186,7 +191,7 @@ export function updateLobbyMap(room, host, onCenter) {
   if (!lobbyMap) {
     // World view is navigation only, never a player's position or actual zone.
     lobbyMap = L.map('lobbyMap').setView([20,0], 2);
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {subdomains:'abc',maxZoom:20,attribution:'© OpenStreetMap © CARTO'}).addTo(lobbyMap);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {subdomains:'abc',maxZoom:19,attribution:'© OpenStreetMap-Mitwirkende'}).addTo(lobbyMap);
     lobbyMap.on('click', (event) => lobbySelect?.({lat:event.latlng.lat,lng:event.latlng.lng}));
   }
   const center = room.settings?.center;

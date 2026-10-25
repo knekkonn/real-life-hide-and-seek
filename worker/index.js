@@ -19,19 +19,43 @@ export default {
     const reply=(body,status=200)=>new Response(JSON.stringify({...body,serverTime:Date.now()}),{status,headers});
     try {
       if (!['GET','POST'].includes(request.method)) return reply({error:'METHOD_NOT_ALLOWED'},405);
-      const match=/^\/rooms\/(\d{4})$/.exec(new URL(request.url).pathname);
-      if (!match) return reply({error:'NOT_FOUND'},404);
+      const path=new URL(request.url).pathname;
+      const photoMatch=/^\/rooms\/(\d{4})\/photos\/([A-Za-z0-9_-]{4,128})$/.exec(path);
+      const match=/^\/rooms\/(\d{4})$/.exec(path);
+      if (!match && !photoMatch) return reply({error:'NOT_FOUND'},404);
+      if (photoMatch && request.method!=='GET') return reply({error:'METHOD_NOT_ALLOWED'},405);
       const uid=await authenticate(request);
-      const code=match[1];
+      const code=(photoMatch || match)[1];
+      if(photoMatch) {
+        await limit(env,uid,'photo-read',60,60000);
+        for(let attempt=0;attempt<5;attempt++) {
+          const row=await env.DB.prepare('SELECT state,revision,expires_at FROM rooms WHERE code=?').bind(code).first();
+          if(!row || row.expires_at<Date.now()) return reply({error:'ROOM_EXPIRED'},404);
+          let room=JSON.parse(row.state);
+          if(room.phase==='playing' && room.phaseEndsAt && room.phaseEndsAt<=Date.now()) {
+            room=await settlePhases(room);
+            const saved=await env.DB.prepare('UPDATE rooms SET state=?,revision=revision+1 WHERE code=? AND revision=?').bind(JSON.stringify(room),code,row.revision).run();
+            if(!saved.meta.changes) continue;
+          }
+          const viewer=room.players?.[uid], photo=room.photoMetadata?.[photoMatch[2]];
+          if(!viewer || !viewer.active || viewer.status==='left' || viewer.role!=='seeker' || room.phase!=='playing' || !photo || photo.roundId!==(room.roundId || room.startedAt || room.createdAt)) return reply({error:'PHOTO_NOT_AVAILABLE'},403);
+          const bytes=Uint8Array.from(atob(photo.image.split(',')[1]),char=>char.charCodeAt(0));
+          return new Response(bytes,{status:200,headers:{...headers,'Content-Type':'image/jpeg','Content-Disposition':'inline; filename="round-photo.jpg"'}});
+        }
+        return reply({error:'CONCURRENT_UPDATE_RETRY'},409);
+      }
       let input;
       if (request.method==='POST') {
-        if (Number(request.headers.get('Content-Length'))>16384) return reply({error:'PAYLOAD_TOO_LARGE'},413);
+        if (Number(request.headers.get('Content-Length'))>65536) return reply({error:'PAYLOAD_TOO_LARGE'},413);
         const text=await request.text();
-        if (new TextEncoder().encode(text).length>16384) return reply({error:'PAYLOAD_TOO_LARGE'},413);
+        const bodySize=new TextEncoder().encode(text).length;
+        if (bodySize>65536) return reply({error:'PAYLOAD_TOO_LARGE'},413);
         try { input=JSON.parse(text); } catch { return reply({error:'INVALID_JSON'},400); }
         if (!input || typeof input!=='object' || Array.isArray(input)) return reply({error:'INVALID_JSON'},400);
+        if (input.action!=='submitPhoto' && bodySize>16384) return reply({error:'PAYLOAD_TOO_LARGE'},413);
         await limit(env,uid,'action',90,60000);
         if (input.action==='join') await limit(env,uid,'join',5,60000);
+        if (input.action==='submitPhoto') await limit(env,uid,'photo',3,300000);
         if (input.action==='create') {
           await limit(env,uid,'create',3,3600000);
           if (typeof input.name!=='string' || !/^[\p{L}\p{N}_ -]{2,18}$/u.test(input.name)) return reply({error:'INVALID_NAME'},400);
@@ -62,14 +86,14 @@ export default {
         for (const [id,req] of Object.entries(next.joinRequests || {})) if (Date.now()-req.createdAt>300000) delete next.joinRequests[id];
         for (const key of ['traps','decoys']) for (const [id,item] of Object.entries(next[key] || {})) if (item.expiresAt<Date.now()) delete next[key][id];
         const serialized=JSON.stringify(next);
-        if (serialized.length>128000) return reply({error:'ROOM_LIMIT'},409);
+        if (serialized.length>1024000) return reply({error:'ROOM_LIMIT'},409);
         const saved=await env.DB.prepare('UPDATE rooms SET state=?,revision=revision+1 WHERE code=? AND revision=?').bind(serialized,code,row.revision).run();
         if (saved.meta.changes) return reply({result});
       }
       return reply({error:'CONCURRENT_UPDATE_RETRY'},409);
     } catch (error) {
       const message=error?.message || 'BACKEND_ERROR';
-      const known=/^(UNAUTHENTICATED|NOT_MEMBER|HOST_ONLY|LOBBY_CLOSED|REQUESTS_FULL|INVALID_NAME|REQUEST_EXPIRED|CENTER_REQUIRED|INVALID_GPS|STALE_CATCH|FRESH_GPS_REQUIRED|INVALID_POINT|TASK_UNAVAILABLE|TASK_COOLDOWN|INVALID_CHALLENGE|WRONG_ANSWER|CHALLENGE_TOO_FAST|UNKNOWN_ACTION|RATE_LIMIT|FROZEN)$/.test(message);
+      const known=/^(UNAUTHENTICATED|NOT_MEMBER|HOST_ONLY|LOBBY_CLOSED|REQUESTS_FULL|INVALID_NAME|REQUEST_EXPIRED|CENTER_REQUIRED|INVALID_GPS|STALE_CATCH|FRESH_GPS_REQUIRED|INVALID_POINT|TASK_UNAVAILABLE|TASK_COOLDOWN|TASK_ALREADY_ACTIVE|TASK_EXPIRED|NO_OBJECTIVES|INVALID_PHOTO|PHOTO_ALREADY_SUBMITTED|INVALID_CHALLENGE|WRONG_ANSWER|TASK_TOO_FAST|UNKNOWN_ACTION|RATE_LIMIT|FROZEN)$/.test(message);
       const status=message==='UNAUTHENTICATED'?401:message==='RATE_LIMIT'?429:message==='NOT_MEMBER'||message==='HOST_ONLY'?403:known?409:500;
       return reply({error:known?message:'BACKEND_ERROR'},status);
     }
