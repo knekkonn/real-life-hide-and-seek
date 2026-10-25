@@ -1065,6 +1065,14 @@ function renderSpecialNotices(self) {
     zoneNotice.innerHTML=`<strong>SPERRZONE VERLASSEN · NOCH ${formatTime(remaining)}</strong><span>Du stehst im markierten Sperrkreis${radius?` mit ${radius} m Radius`:''}. Geh jetzt auf einem sicheren Weg hinaus oder scheide aus.</span><div class="relocation-progress"><i style="width:${Math.max(0,Math.min(100,remaining/45*100))}%"></i></div>`;
   }
   const task=self?.activeTask;
+  if(self?.active&&task&&['closecall','photo'].includes(task.kind)&&(task.completed||task.failed)) {
+    const resultKey=`${state.room?.roundId}:${task.id}:${task.failed?'failed':'complete'}`;
+    if(state.lastRiskResult!==resultKey) {
+      state.lastRiskResult=resultKey;
+      if(task.failed) toast('Aufgabe beendet',task.failureReason||'Der Versuch wurde beendet.','warn',6500);
+      else if(task.kind==='closecall') toast('Mutprobe beendet',`+${Number(task.pointsAwarded)||0} Punkte. Dein einmaliger Versuch für diese Runde ist verbraucht.`,'success',5500);
+    }
+  }
   const challenge=self?.active&&self?.role==='hider'&&['hide','playing'].includes(state.room?.phase)&&task&&!task.completed&&!task.failed&&['closecall','photo'].includes(task.kind)?task:null;
   proximity?.classList.toggle('hidden',!challenge);
   if(proximity&&challenge) {
@@ -1557,6 +1565,8 @@ function tick() {
   const canStartTask=!tasksUnavailable&&!cooldownLeft&&!taskRunning&&canUseGame();
   for (const id of ['startTaskBtn','visitTaskBtn','stayTaskBtn','photoTaskBtn','closeCallTaskBtn']) if ($(id)) $(id).disabled=!canStartTask||self?.role!=='hider';
   if($('closeCallTaskBtn')) { $('closeCallTaskBtn').disabled=!canStartTask||self?.role!=='hider'||room.phase!=='playing'||Boolean(self?.closeCallUsed); $('closeCallTaskBtn').textContent=self?.closeCallUsed?'Diese Runde bereits genutzt':'Mutprobe starten →'; }
+  if($('photoTaskBtn')&&room.phase==='playing'&&timerSeconds()<180) { $('photoTaskBtn').disabled=true; $('photoTaskBtn').title='Für die Fotoaufgabe müssen mindestens drei Minuten übrig sein.'; }
+  else if($('photoTaskBtn')) $('photoTaskBtn').removeAttribute('title');
   if(activeTask?.failed&&activeTask.failureReason) { $('taskCooldown').classList.remove('hidden'); $('taskCooldown').textContent=`${activeTask.failureReason}${cooldownLeft?` Cooldown: ${cooldownLeft} s`:''}`; }
   else if(activeTask?.kind==='closecall'&&activeTask.completed) { $('taskCooldown').classList.remove('hidden'); $('taskCooldown').textContent=`Mutprobe beendet: +${activeTask.pointsAwarded||0} Punkte. Einmaliger Versuch verbraucht.${cooldownLeft?` Cooldown: ${cooldownLeft} s`:''}`; }
   const isSeeker=self?.role==='seeker',liveSearch=room.phase==='playing'&&isSeeker&&canStartTask;
