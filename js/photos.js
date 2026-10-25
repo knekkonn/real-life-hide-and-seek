@@ -9,8 +9,11 @@ export async function compressRoundPhoto(file,{bitmapFactory=globalThis.createIm
   try {
     if(!Number.isFinite(bitmap.width)||!Number.isFinite(bitmap.height)||bitmap.width<1||bitmap.height<1) throw new Error('Das Foto konnte nicht gelesen werden.');
     if(bitmap.width*bitmap.height>50_000_000) throw new Error('Das Bild hat eine zu hohe Auflösung. Bitte ein kleineres Foto wählen.');
-    for(let maxEdge=640;maxEdge>=128;maxEdge=Math.floor(maxEdge*.78)) {
-      const scale=Math.min(1,maxEdge/bitmap.width,maxEdge/bitmap.height);
+    // The Worker accepts photos up to 320×240 pixels. Keep the first encode
+    // inside those limits too; a flat scene can fit the byte cap even at 640×480.
+    const serverScale=Math.min(1,320/bitmap.width,240/bitmap.height);
+    for(let reduction=1;reduction>=.15;reduction*=.78) {
+      const scale=serverScale*reduction;
       const canvas=canvasFactory(); canvas.width=Math.max(1,Math.round(bitmap.width*scale)); canvas.height=Math.max(1,Math.round(bitmap.height*scale));
       const context=canvas.getContext('2d',{alpha:false});
       if(!context) throw new Error('Foto kann auf diesem Gerät nicht verarbeitet werden.');
