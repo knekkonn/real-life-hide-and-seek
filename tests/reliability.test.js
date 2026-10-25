@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { transactRoom, normalizeRoom } from '../js/transactions.js';
-import { evaluateZone } from '../js/gps.js';
+import { evaluateZone, makeLocationSample } from '../js/gps.js';
 import { createRoomData, addPlayerToRoom, updateSettings } from '../js/game-service.js';
 
 test('cold transaction cache retries against the existing server lobby', async () => {
@@ -24,6 +24,13 @@ test('missing and rejected room transactions do not report success', async () =>
     const api = {runTransaction:async () => ({committed,snapshot:{val:()=>null}})};
     assert.equal(await transactRoom(api,'0000',()=>{throw Error('not called');}),null);
   }
+});
+
+test('GPS samples use fresh callback time instead of a stale browser timestamp', () => {
+  const sample=makeLocationSample({timestamp:978307296000,coords:{latitude:52.5,longitude:13.4,accuracy:5,altitude:42,altitudeAccuracy:10}},2000000000000);
+  assert.equal(sample.measuredAt,2000000000000);
+  assert.equal(sample.altitude,42);
+  assert.throws(()=>makeLocationSample({coords:{latitude:91,longitude:13,accuracy:5}},2000000000000),/INVALID_GPS_SAMPLE/);
 });
 
 test('Firebase omitted empty maps and inventories are normalized', () => {

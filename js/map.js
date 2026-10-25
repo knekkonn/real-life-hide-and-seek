@@ -75,7 +75,7 @@ function putMarker(id, point, kind, label, detail='') {
   }
 }
 
-export function updateMap(room, selfId, ownLocation, role) {
+export function updateMap(room, selfId, ownLocation, role, gpsSyncStatus='idle') {
   if (!map || !room) return;
   const center = room.settings?.center || ownLocation || null;
   const radius = Number(room.settings?.radius) || 500;
@@ -93,7 +93,7 @@ export function updateMap(room, selfId, ownLocation, role) {
   const allowed = new Set();
   const players = Object.values(room.players || {});
   const self = room.players?.[selfId];
-  if (self?.activeTask?.kind === 'visit' && !self.activeTask.failed && !self.activeTask.completed && self.activeTask.targetLocation && ['hide','playing'].includes(room.phase)) {
+  if (['visit','scan'].includes(self?.activeTask?.kind) && !self.activeTask.failed && !self.activeTask.completed && self.activeTask.targetLocation && ['hide','playing'].includes(room.phase)) {
     const id = `task-target:${selfId}`;
     allowed.add(id);
     putMarker(id, self.activeTask.targetLocation, 'cache', 'Geheimer Feldzielpunkt', 'Nur für dich sichtbar · Nähe erforderlich');
@@ -175,7 +175,7 @@ export function updateMap(room, selfId, ownLocation, role) {
     if (!allowed.has(id)) { map.removeLayer(marker); mapMarkers.delete(id); }
   }
   const mapCaption = document.getElementById('mapCaption');
-  if (mapCaption) mapCaption.textContent = role === 'hider' && jammerActive ? `RADAR-JAMMER AKTIV · ${Math.ceil((room.effects.jammerUntil-now())/1000)} S` : ownLocation ? 'GPS-Signal verbunden · Standort lokal aktiv' : 'GPS wartet auf Freigabe';
+  if (mapCaption) mapCaption.textContent = role === 'hider' && jammerActive ? `RADAR-JAMMER AKTIV · ${Math.ceil((room.effects.jammerUntil-now())/1000)} S` : ownLocation ? gpsSyncStatus==='synced' ? 'GPS-Signal verbunden · servergesichert und privat' : gpsSyncStatus==='syncing' ? 'GPS-Signal verbunden · Synchronisierung läuft' : gpsSyncStatus==='error'||gpsSyncStatus==='offline' ? 'GPS aktuell nur auf diesem Gerät · offline' : 'GPS-Signal verbunden · Synchronisierung ausstehend' : 'GPS wartet auf Freigabe';
   const chip = document.getElementById('mapRadiusChip');
   if (chip) chip.textContent = `RADIUS ${radius} M`;
   if (!boundsWasFit && (ownLocation || room.settings?.center)) {

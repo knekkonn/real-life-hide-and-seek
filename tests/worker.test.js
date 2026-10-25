@@ -177,6 +177,34 @@ test('server-issued Vigenere cipher is guided, private, rate-limited and redeema
   await assert.rejects(applyAction(successRoom,'guest',{action:'completeTask',proof:{id:started.result.id,answer}},timestamp+32000),/INVALID_CHALLENGE/);
 });
 
+test('seeker tasks are role-specific and server-check cache or hider proximity', async () => {
+  const room=playing(),timestamp=Date.now();
+  room.itemBoxes={box1:{id:'box1',location:{lat:.0001,lng:0},collected:false},box2:{id:'box2',location:{lat:.0002,lng:0},collected:false}};
+  await assert.rejects(applyAction(room,'guest',{action:'beginTask',kind:'scan'},timestamp),/TASK_UNAVAILABLE/);
+  const scan=await applyAction(room,'host',{action:'beginTask',kind:'scan'},timestamp);
+  assert.match(scan.result.prompt,/Signal Cache scannen/);
+  assert.ok(room.players.host.activeTask.targetBoxId==='box1'||room.players.host.activeTask.targetBoxId==='box2');
+  await applyAction(room,'host',{action:'updatePlayerLocation',location:{lat:room.players.host.activeTask.targetLocation.lat,lng:room.players.host.activeTask.targetLocation.lng,accuracy:5,measuredAt:timestamp+1000}},timestamp+1000);
+  const scanned=await applyAction(room,'host',{action:'completeTask',proof:{id:scan.result.id}},timestamp+2000);
+  assert.equal(scanned.result,true);
+  assert.equal(room.players.host.coins,25);
+
+  // The first GPS fixes in playing() are now stale. Refresh both players so
+  // proximity can be proven from current server-side measurements.
+  await applyAction(room,'host',{action:'updatePlayerLocation',location:{lat:0,lng:0,accuracy:5,measuredAt:timestamp+40000}},timestamp+40000);
+  await applyAction(room,'guest',{action:'updatePlayerLocation',location:{lat:0,lng:0,accuracy:5,measuredAt:timestamp+40000}},timestamp+40000);
+  // game-service stamps locationAt with wall clock time; align this synthetic
+  // test timeline with the timestamps passed to applyAction.
+  room.players.host.locationAt=room.players.guest.locationAt=timestamp+40000;
+  const search=await applyAction(room,'host',{action:'beginTask',kind:'proximity'},timestamp+40000);
+  assert.match(search.result.prompt,/35 m/);
+  await applyAction(room,'host',{action:'updatePlayerLocation',location:{lat:0,lng:0,accuracy:5,measuredAt:timestamp+41000}},timestamp+41000);
+  room.players.host.locationAt=timestamp+41000;
+  const found=await applyAction(room,'host',{action:'completeTask',proof:{id:search.result.id}},timestamp+42000);
+  assert.equal(found.result,true);
+  assert.equal(room.players.host.tasksSolved,2);
+});
+
 test('visit tasks select private in-zone targets and movement failures trigger cooldown', async () => {
   const room=playing(); const timestamp=Date.now();
   room.objectives={one:{id:'one',location:{lat:0.001,lng:0}}};

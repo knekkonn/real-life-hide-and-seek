@@ -1,4 +1,4 @@
-import { evaluateZone } from './gps.js';
+import { evaluateZone, makeLocationSample } from './gps.js';
 import { initBackend, getBackendMode, getPlayerUid, createRoom, getRoom, mutateRoom, subscribeRoom, subscribeConnection, workerCommand, fetchRoundPhoto } from './backend.js';
 import { MAX_PLAYERS, MIN_PLAYERS } from './config.js';
 import { SKILLS, SKILL_IDS, DEFAULT_SETTINGS, skillTuning } from './skills.js';
@@ -13,7 +13,7 @@ import { clamp, now, formatTime, escapeHTML, randomCode, distanceMeters, Sound, 
 const $ = (id) => document.getElementById(id);
 const state = {
   uid:null, playerName:'', roomCode:null, room:null, unsubscribe:null, connected:true,
-  ownLocation:null, watchId:null, gpsPending:false, lastLocationWrite:0,
+  ownLocation:null, watchId:null, gpsPending:false, gpsSyncStatus:'idle', lastLocationWrite:0,
   lastAnnouncementId:null, lastSeekerSideAnnouncementId:null, subscriptionStartedAt:0, seenCatchRequest:null,
   revealDismissedPhase:null, lastCountdownSecond:null, currentTab:'mapTab', lastCelebratedRoundId:null, lastTracksRoundId:null,
   audioOn:true, tickHandle:null, passiveRewardAt:0, shakeHandler:null, shakeTimer:null,
@@ -123,6 +123,8 @@ async function startApp() {
   $('visitTaskBtn').addEventListener('click', () => startTask('visit'));
   $('stayTaskBtn').addEventListener('click', () => startTask('stay'));
   $('photoTaskBtn').addEventListener('click', () => startTask('photo'));
+  $('scanTaskBtn').addEventListener('click', () => startTask('scan'));
+  $('proximityTaskBtn').addEventListener('click', () => startTask('proximity'));
   $('newRoundBtn').addEventListener('click', startNewRound);
   $('postRoundSettingsBtn').addEventListener('click', startNewRound);
   $('leaveEndBtn').addEventListener('click', confirmLeaveRoom);
@@ -151,7 +153,7 @@ async function startApp() {
   document.querySelectorAll('.game-tab').forEach((button) => button.addEventListener('click', () => selectTab(button.dataset.tab)));
   window.addEventListener('unhandledrejection', (event) => { event.preventDefault(); toast('Aktion nicht bestätigt', event.reason?.message || 'Bitte Verbindung prüfen und erneut versuchen.', 'danger'); });
   window.addEventListener('online', async () => { try { await initBackend(); bindConnection(); if (!state.roomCode) await restoreSession(); } catch (error) { toast('Verbindung fehlgeschlagen',error.message,'warn'); } });
-  window.addEventListener('offline', () => { state.connected=false; state.zone=null; setConnectionBadge(); });
+  window.addEventListener('offline', () => { state.connected=false; state.zone=null; if(state.ownLocation) state.gpsSyncStatus='offline'; setConnectionBadge(); if(state.room&&state.room.phase!=='lobby') updateMap(state.room,state.uid,state.ownLocation||getSelf()?.location,currentRole(),state.gpsSyncStatus); });
   window.addEventListener('keydown', (event) => { if (event.key === 'Escape' && state.modalCloseable && !$('modalRoot').classList.contains('hidden')) closeModal(); });
   bindConnection();
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
@@ -165,8 +167,10 @@ function bindConnection() {
   state.unsubscribeConnection?.();
   state.unsubscribeConnection = subscribeConnection((connected) => {
     state.connected = connected;
-    if (!connected) state.zone = null;
+    if (!connected) { state.zone = null; if(state.ownLocation) state.gpsSyncStatus='offline'; }
+    else if(state.ownLocation&&state.gpsSyncStatus==='offline') state.gpsSyncStatus='syncing';
     setConnectionBadge();
+    if(state.room&&state.room.phase!=='lobby') updateMap(state.room,state.uid,state.ownLocation||getSelf()?.location,currentRole(),state.gpsSyncStatus);
   });
 }
 
@@ -285,6 +289,7 @@ function attachRoomListener() {
     const priorPhase = state.room?.phase;
     const priorRole = state.room?.players?.[state.uid]?.role;
     state.room = room;
+    if (!state.ownLocation && room.players?.[state.uid]?.location) state.gpsSyncStatus='synced';
     const self = getSelf();
     // Persisted coordinates are not a fresh device measurement.
     showGameState();
@@ -480,7 +485,7 @@ function renderGame() {
   $('gpsBtn').textContent = state.ownLocation ? '◎ GPS verbunden' : '◎ GPS aktivieren';
   $('mapNotice').classList.toggle('hidden', Boolean(state.ownLocation));
   $('mapNotice').querySelector('strong').textContent = state.ownLocation ? 'GPS verbunden' : 'GPS noch nicht aktiv';
-  $('mapNotice').querySelector('small').textContent = state.ownLocation ? 'Deine Position wird aktualisiert.' : 'Standort freigeben, um deine Position auf der Karte anzuzeigen.';
+  $('mapNotice').querySelector('small').textContent = state.ownLocation ? 'Dein Standort wird serverseitig synchronisiert und nur für nötige Spielaktionen freigegeben.' : 'Standort freigeben, um deine Position auf der Karte anzuzeigen.';
   const mapLocked = seekerLock || empFrozen || phase === 'countdown' || phase === 'reveal';
   const jammed = role === 'hider' && (room.effects?.jammerUntil || 0) > now();
   $('map').style.filter = jammed ? 'grayscale(.8) contrast(1.25) brightness(.72)' : '';
@@ -495,7 +500,7 @@ function renderGame() {
   renderShop();
   renderNearbyItems();
   renderLeaderboard();
-  if (room.phase !== 'lobby') updateMap(room, state.uid, state.ownLocation || self.location, role);
+  if (room.phase !== 'lobby') updateMap(room, state.uid, state.ownLocation || self.location, role,state.gpsSyncStatus);
 }
 
 function timerSeconds() {
@@ -636,8 +641,10 @@ async function requestGPS() {
   const requestedCode=state.roomCode;
   const onSuccess = async (position) => {
     if (state.roomCode !== requestedCode || !state.uid) return;
-    const coords = position.coords;
-    state.ownLocation = { lat:coords.latitude, lng:coords.longitude, accuracy:coords.accuracy, measuredAt:position.timestamp + (now() - Date.now()), ...(Number.isFinite(coords.altitude) && Number.isFinite(coords.altitudeAccuracy) && coords.altitudeAccuracy<=20 ? {altitude:coords.altitude} : {}) };
+    try { state.ownLocation = makeLocationSample(position,now()); }
+    catch (error) { state.gpsPending=false; state.gpsError='GPS-Messung ungültig'; console.warn('Invalid GPS sample',error); return; }
+    if (!state.connected) state.gpsSyncStatus='offline';
+    else if (state.gpsSyncStatus!=='synced' || now()-state.lastLocationWrite>6500) state.gpsSyncStatus='syncing';
     state.gpsError = null;
     state.gpsPending = false;
     $('gpsBtn').textContent = '◎ GPS verbunden';
@@ -645,11 +652,11 @@ async function requestGPS() {
     centerMap(state.ownLocation);
     if (state.connected && now() - state.lastLocationWrite > 6500) {
       state.lastLocationWrite = now();
-      try { await updatePlayerLocation(state.roomCode, state.uid, state.ownLocation); }
-      catch (error) { console.warn('Could not sync GPS', error); toast('GPS lokal aktiv', 'Die Position konnte noch nicht synchronisiert werden.', 'warn'); }
+      try { await updatePlayerLocation(state.roomCode, state.uid, state.ownLocation); state.gpsSyncStatus='synced'; }
+      catch (error) { state.gpsSyncStatus='error'; console.warn('Could not sync GPS', error); toast('GPS-Synchronisierung fehlgeschlagen', 'Dein Standort ist nur auf diesem Gerät aktuell; servergeprüfte Aktionen warten auf die Verbindung.', 'warn'); }
     }
     if (state.room) {
-      updateMap(state.room, state.uid, state.ownLocation, currentRole());
+      updateMap(state.room, state.uid, state.ownLocation, currentRole(),state.gpsSyncStatus);
       renderNearbyItems();
     }
     const notice = $('mapNotice');
@@ -815,18 +822,23 @@ async function startTask(kind) {
     const escapedPrompt=escapeHTML(challenge.prompt || 'Finde den Zielpunkt auf der Karte.');
     const body=kind==='cipher'
       ? `<p class="modal-copy">${escapedPrompt}</p><label class="modal-field-label" for="taskAnswer">6-Buchstaben-Klartext</label><input id="taskAnswer" class="modal-input" autocomplete="off" maxlength="6" minlength="6" autocapitalize="characters" spellcheck="false" aria-label="6-Buchstaben-Klartext"><p>Falsche oder zu schnelle Antworten beenden den Versuch und starten den Cooldown.</p>`
+      : kind==='scan'
+      ? `<p class="modal-copy">Gehe zu dem sicheren, öffentlichen Signal Cache, den der Server für dich ausgewählt hat. Er wird auf deiner Karte markiert. Nähe unter 20 m erforderlich.</p><p id="scanTaskStatus">Cache-Scan läuft · 120 Sekunden</p>`
+      : kind==='proximity'
+      ? `<p class="modal-copy">Suche selbstständig nach einem aktiven Hider. Der Server bestätigt die Aufgabe, wenn du auf 35 m herankommst; du bekommst keine fremde GPS-Position angezeigt.</p><p>Verbleibende Zeit: 120 Sekunden</p>`
       : kind==='visit'
       ? `<p class="modal-copy">Gehe zum geheimen Punkt in der Zone. Das Ziel erscheint auf deiner Karte. Bleib in einem sicheren, öffentlichen Bereich.</p><p id="visitTaskStatus">Zielsuche läuft · 120 Sekunden</p>`
       : kind==='photo'
       ? `<p class="modal-copy">Fotografiere dein Versteck, ohne andere Personen aufzunehmen. Das Bild wird im Browser verkleinert und ohne EXIF-Daten an die Runde übertragen. Es ist für das Suchteam sichtbar und wird beim Rundenende gelöscht.</p><label class="modal-field-label" for="taskPhoto">Kamera oder Bild auswählen</label><input id="taskPhoto" class="modal-input" type="file" accept="image/jpeg,image/png,image/webp" capture="environment"><p>Nur ein kleines JPEG wird übertragen. Das Bild bleibt auf die laufende Runde beschränkt.</p>`
       : `<p class="modal-copy">Halte deinen Standort 60 Sekunden lang innerhalb von 15 m. GPS-Lücken über 10 Sekunden, zu ungenaue Messungen oder Bewegung beenden den Versuch.</p><p id="stayTaskStatus">Verbleibende Zeit: 60 s</p>`;
-    openModal({kicker:'FIELD CHALLENGE',title:kind==='cipher'?'Vigenère-Code knacken':kind==='visit'?'Geheimer Zielpunkt':kind==='photo'?'Versteck fotografieren':'Versteck halten',body,closeable:false,actions:[
+    const titles={cipher:'Vigenère-Code knacken',visit:'Geheimer Zielpunkt',photo:'Versteck fotografieren',stay:'Versteck halten',scan:'Signal Cache scannen',proximity:'Hider-Signal aufspüren'};
+    openModal({kicker:'FIELD CHALLENGE',title:titles[kind]||'Feldaufgabe',body,closeable:['scan','proximity'].includes(kind),actions:[
       {label:'Abbrechen',variant:'button-secondary',onClick:async()=>{ await workerCommand(state.roomCode,'failTask',{taskId:challenge.id}); clearInterval(state.taskProgressTimer); }},
       ...(kind==='cipher'?[{label:'Antwort prüfen',variant:'button-primary',keepOpen:true,onClick:async()=>{
         await completeTask(state.roomCode,state.uid,'code',{id:challenge.id,answer:$('taskAnswer').value});
         closeModal(); toast('Aufgabe geschafft','Belohnung wurde gutgeschrieben.','success');
-      }}]:kind==='visit'?[{label:'Ich bin am Ziel',variant:'button-primary',keepOpen:true,onClick:async()=>{
-        await completeTask(state.roomCode,state.uid,'visit',{id:challenge.id}); closeModal(); toast('Ziel erreicht','Belohnung wurde gutgeschrieben.','success');
+      }}]:['visit','scan','proximity'].includes(kind)?[{label:kind==='scan'?'Cache scannen':kind==='proximity'?'Nähe bestätigen':'Ich bin am Ziel',variant:'button-primary',keepOpen:true,onClick:async()=>{
+        await completeTask(state.roomCode,state.uid,kind,{id:challenge.id}); closeModal(); toast('Aufgabe geschafft','Belohnung wurde gutgeschrieben.','success');
       }}]:kind==='photo'?[{label:'Foto senden',variant:'button-primary',keepOpen:true,onClick:async()=>{
         const file=$('taskPhoto')?.files?.[0]; if(!file) { toast('Foto fehlt','Nimm ein Foto auf oder wähle ein Bild aus.','warn'); return; }
         const image=await compressPhoto(file);
@@ -915,11 +927,26 @@ function tick() {
   const backendNotice=$('taskBackendNotice');
   if(backendNotice) { backendNotice.classList.toggle('hidden',!tasksUnavailable); if(tasksUnavailable) backendNotice.textContent='Servergeprüfte Aufgaben sind gesperrt, bis Cloudflare Worker/D1 eingerichtet und WORKER_URL gesetzt ist.'; }
   if (cooldown) { cooldown.textContent=cooldownLeft ? `Aufgaben-Cooldown: ${cooldownLeft} s` : ''; cooldown.classList.toggle('hidden',!cooldownLeft); }
-  for (const id of ['startTaskBtn','visitTaskBtn','stayTaskBtn','photoTaskBtn']) if ($(id)) $(id).disabled=tasksUnavailable || cooldownLeft>0 || !canUseGame() || self?.role!=='hider';
+  const hiderTasks=$('hiderTasks'),seekerTasks=$('seekerTasks');
+  hiderTasks?.classList.toggle('hidden',self?.role!=='hider');
+  seekerTasks?.classList.toggle('hidden',self?.role!=='seeker');
+  const roleHint=$('taskRoleHint');
+  if(roleHint) roleHint.textContent=self?.role==='hider'?'Hider-Aufträge bringen Credits für Verstecken, Navigation und Beweise.':self?.role==='seeker'?'Seeker-Aufträge: sichere Signal Caches scannen oder einen Hider im Suchradius aufspüren.':'Aufgaben sind während deiner Zuschauerrolle nicht verfügbar.';
+  const canStartTask=!tasksUnavailable&&!cooldownLeft&&canUseGame();
+  for (const id of ['startTaskBtn','visitTaskBtn','stayTaskBtn','photoTaskBtn']) if ($(id)) $(id).disabled=!canStartTask||self?.role!=='hider';
+  const isSeeker=self?.role==='seeker',liveSearch=room.phase==='playing'&&isSeeker&&canStartTask;
+  const activeBoxes=Object.values(room.itemBoxes||{}).some(box=>!box.collected);
+  const activeHiders=Object.values(room.players||{}).some(player=>player.active&&player.role==='hider');
+  if($('scanTaskBtn')) $('scanTaskBtn').disabled=!liveSearch||!activeBoxes;
+  if($('proximityTaskBtn')) $('proximityTaskBtn').disabled=!liveSearch||!activeHiders;
   state.zone = evaluateZone(state.zone, {location:state.ownLocation, center:room.settings?.center, radius:room.settings?.radius, connected:state.connected, timestamp:now()});
   const labels = {inside:'Innerhalb der Zone', warning:`Zone verlassen? Rückkehr: ${state.zone.remaining} s`, outside:getBackendMode() === 'worker' ? 'Außerhalb der Zone – Server prüft die Strafe anhand frischer Messungen.' : 'Anhaltend außerhalb – Host informieren. Keine automatische Strafe.', uncertain:'GPS ungenau – keine Strafe', stale:'GPS veraltet – keine Strafe', unavailable:state.gpsError || 'GPS nicht verfügbar', offline:'Verbindung unterbrochen – keine Strafe'};
   const gpsStatus = $('gpsStatus');
-  if (gpsStatus) gpsStatus.textContent = (getBackendMode() === 'worker' && getSelf()?.zone?.violations ? `Bestätigte Zonenverstöße: ${getSelf().zone.violations} · ` : '') + labels[state.zone.status] + (state.ownLocation ? ` · ±${Math.round(state.ownLocation.accuracy)} m · Messung ${Math.max(0,Math.floor((now()-state.ownLocation.measuredAt)/1000))} s alt` : '');
+  if (gpsStatus) {
+    const ageSeconds=state.ownLocation?Math.max(0,Math.floor((now()-state.ownLocation.measuredAt)/1000)):null;
+    const ageLabel=ageSeconds===null?'':ageSeconds<2?' · Messung gerade eben':` · Messung ${ageSeconds} s alt`;
+    gpsStatus.textContent=(getBackendMode()==='worker'&&self?.zone?.violations?`Bestätigte Zonenverstöße: ${self.zone.violations} · `:'')+labels[state.zone.status]+(state.ownLocation?` · ±${Math.round(state.ownLocation.accuracy)} m${ageLabel}`:'');
+  }
   if (isHost() && state.connected && !state.advancingPhase && ['countdown','reveal','hide','playing'].includes(room.phase) && room.phaseEndsAt && now() >= room.phaseEndsAt) {
     state.advancingPhase = true;
     advanceExpiredPhase(state.roomCode, room).catch((error) => console.warn('phase advance failed', error)).finally(() => { state.advancingPhase = false; });
@@ -955,7 +982,7 @@ function tick() {
   if (currentSecond !== state.lastMapTickSecond && !$('gameScreen').classList.contains('hidden')) {
     state.lastMapTickSecond = currentSecond;
     if (state.room && state.room.phase !== 'lobby') {
-      updateMap(state.room, state.uid, state.ownLocation || getSelf()?.location, currentRole());
+      updateMap(state.room, state.uid, state.ownLocation || getSelf()?.location, currentRole(),state.gpsSyncStatus);
       const self = getSelf();
       if (self?.effects?.frozenUntil && self.effects.frozenUntil <= now() && !$('hideFreeze').classList.contains('hidden')) renderGame();
       if (currentRole() === 'hider' && (state.room.effects?.jammerUntil || 0) <= now()) $('map').style.filter = '';

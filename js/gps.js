@@ -4,6 +4,15 @@ export function validPoint(point) {
   return !!point && Number.isFinite(point.lat) && Math.abs(point.lat) <= 90 && Number.isFinite(point.lng) && Math.abs(point.lng) <= 180;
 }
 
+// Use callback receipt time as the sample time. Some browsers can expose a
+// stale or non-wall-clock GeolocationPosition.timestamp; cached fixes are
+// already bounded by the geolocation request's maximumAge option.
+export function makeLocationSample(position, measuredAt=Date.now()) {
+  const coords=position?.coords;
+  if (!coords || !validPoint({lat:coords.latitude,lng:coords.longitude}) || !Number.isFinite(coords.accuracy) || coords.accuracy<=0 || !Number.isFinite(measuredAt)) throw new Error('INVALID_GPS_SAMPLE');
+  return {lat:coords.latitude,lng:coords.longitude,accuracy:coords.accuracy,measuredAt,...(Number.isFinite(coords.altitude) && Number.isFinite(coords.altitudeAccuracy) && coords.altitudeAccuracy<=20 ? {altitude:coords.altitude} : {})};
+}
+
 // Pure evaluator: uncertainty interrupts the continuous, reliable 30-second window.
 // This is advisory; a trusted authority must authorize penalties separately.
 export function evaluateZone(previous, { location, center, radius, connected, timestamp }) {

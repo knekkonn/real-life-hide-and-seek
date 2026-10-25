@@ -125,7 +125,8 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
         const task=player.activeTask;
         if (timestamp>task.expiresAt || task.kind==='stay' && (timestamp-task.lastProofAt>10000 || distanceMeters(location,task.targetLocation)>15)) failTask(player,timestamp);
         else if (task.kind==='stay') task.lastProofAt=timestamp;
-        else if (task.kind==='visit' && distanceMeters(location,task.targetLocation)<=task.radius) task.arrivedAt=timestamp;
+        else if (['visit','scan'].includes(task.kind) && distanceMeters(location,task.targetLocation)<=task.radius) task.arrivedAt=timestamp;
+        else if (task.kind==='proximity' && hasNearbyHider(room,uid,location,timestamp,35)) task.arrivedAt=timestamp;
       }
       result=await game.updatePlayerLocation(context,uid,{...location,measuredAt:timestamp}); break;
     }
@@ -147,10 +148,12 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
       if (timestamp-(player.locationAt || 0)>10000 || player.location?.accuracy>25) throw new Error('FRESH_GPS_REQUIRED');
       result=await game.collectItemBox(context,uid,input.boxId); break;
     case 'beginTask': {
-      if (!player.active || player.role !== 'hider' || !['hide','playing'].includes(room.phase)) throw new Error('TASK_UNAVAILABLE');
+      const kind=input.kind;
+      const hiderKind=['cipher','visit','stay','photo'].includes(kind);
+      const seekerKind=['scan','proximity'].includes(kind);
+      if (!player.active || !(player.role==='hider'&&hiderKind || player.role==='seeker'&&seekerKind) || (player.role==='hider'&&!['hide','playing'].includes(room.phase)) || (player.role==='seeker'&&room.phase!=='playing')) throw new Error('TASK_UNAVAILABLE');
       if ((player.taskCooldownUntil || 0)>timestamp) throw new Error('TASK_COOLDOWN');
       if (player.activeTask && !player.activeTask.failed && !player.activeTask.completed) { if (player.activeTask.expiresAt>timestamp) throw new Error('TASK_ALREADY_ACTIVE'); failTask(player,timestamp); return {room,result:{error:'TASK_EXPIRED'}}; }
-      const kind=['cipher','visit','stay','photo'].includes(input.kind) ? input.kind : 'cipher';
       if (kind==='photo' && room.photoMetadata?.[uid]?.roundId===(room.roundId || room.startedAt || room.createdAt)) throw new Error('PHOTO_ALREADY_SUBMITTED');
       const id=crypto.randomUUID();
       const task={id,kind,createdAt:timestamp,expiresAt:timestamp+(kind==='stay'?180000:kind==='photo'?300000:kind==='cipher'?150000:120000),failed:false,completed:false};
@@ -159,6 +162,17 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
         const points=Object.values(room.objectives || {}); if (!points.length) throw new Error('NO_OBJECTIVES');
         task.targetLocation=points[crypto.getRandomValues(new Uint32Array(1))[0]%points.length].location;
         task.radius=20;
+      }
+      if (kind==='scan') {
+        if (!freshAccurate(player,timestamp)) throw new Error('FRESH_GPS_REQUIRED');
+        const boxes=Object.values(room.itemBoxes||{}).filter(box=>!box.collected&&validPoint(box.location));
+        if (!boxes.length) throw new Error('NO_OBJECTIVES');
+        const box=boxes[crypto.getRandomValues(new Uint32Array(1))[0]%boxes.length];
+        task.targetLocation=box.location; task.targetBoxId=box.id; task.radius=20;
+      }
+      if (kind==='proximity') {
+        if (!freshAccurate(player,timestamp)) throw new Error('FRESH_GPS_REQUIRED');
+        if (!Object.values(room.players||{}).some(candidate=>candidate.active&&candidate.role==='hider'&&freshAccurate(candidate,timestamp))) throw new Error('NO_OBJECTIVES');
       }
       if (kind==='stay') { if (!freshAccurate(player,timestamp)) throw new Error('FRESH_GPS_REQUIRED'); task.targetLocation=player.location; task.duration=60000; task.lastProofAt=timestamp; task.progressSince=timestamp; }
       if (kind==='cipher') {
@@ -169,6 +183,8 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
         const ciphertext=Array.from(task.answer,(char,i)=>String.fromCharCode(65+(char.charCodeAt(0)-65+key.charCodeAt(i%key.length)-65+26)%26)).join('');
         task.prompt=`KRYPTANALYSE · 150 SEKUNDEN\nEntschlüssele den 6-Buchstaben-Code mit Vigenère. Schlüssel: ${key}.\nZiehe an jeder Stelle den Schlüsselwert vom Textwert ab (A=0 bis Z=25). Bei einem Ergebnis unter A zählst du am Alphabetende weiter. Wiederhole den Schlüssel (${key}${key}).\nBeispiel: C minus B ergibt B.\n\nVERSCHLÜSSELTER TEXT: ${ciphertext}`;
       }
+      if (kind==='scan') task.prompt='Signal Cache scannen · Gehe zum markierten Cache und schließe den Scan in 120 Sekunden innerhalb von 20 m ab.';
+      if (kind==='proximity') task.prompt='Hider-Signal aufspüren · Komme innerhalb von 120 Sekunden auf 35 m an einen aktiven Hider heran. Der Server prüft die Nähe, gibt aber keine fremde GPS-Position frei.';
       player.activeTask=task;
       return {room,result:{id,kind,prompt:task.prompt,targetLocation:task.targetLocation,expiresAt:task.expiresAt,duration:task.duration}};
     }
@@ -194,12 +210,14 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
       if (task.kind==='cipher') {
         if (timestamp-task.createdAt<30000) { failTask(player,timestamp); return {room,result:{error:'TASK_TOO_FAST'}}; }
         if (String(input.proof.answer||'').trim().toUpperCase()!==task.answer) { failTask(player,timestamp); return {room,result:{error:'WRONG_ANSWER'}}; }
-      } else if (task.kind==='visit') {
+      } else if (task.kind==='visit' || task.kind==='scan') {
         if (!freshAccurate(player,timestamp) || distanceMeters(player.location,task.targetLocation)>task.radius) { failTask(player,timestamp); return {room,result:{error:'TASK_LOCATION_REQUIRED'}}; }
+      } else if (task.kind==='proximity') {
+        if (!freshAccurate(player,timestamp) || !task.arrivedAt || timestamp-task.arrivedAt>10000 || !hasNearbyHider(room,uid,player.location,timestamp,35)) { failTask(player,timestamp); return {room,result:{error:'TASK_HIDER_NOT_NEARBY'}}; }
       } else if (task.kind==='stay') {
         if (timestamp-task.lastProofAt>10000 || timestamp-task.progressSince<task.duration || !freshAccurate(player,timestamp) || distanceMeters(player.location,task.targetLocation)>15) { failTask(player,timestamp); return {room,result:{error:'TASK_NOT_HELD'}}; }
       } else throw new Error('UNKNOWN_TASK');
-      if(task.kind==='visit' && !task.arrivedAt) { failTask(player,timestamp); return {room,result:{error:'TASK_LOCATION_REQUIRED'}}; }
+      if(['visit','scan'].includes(task.kind) && !task.arrivedAt) { failTask(player,timestamp); return {room,result:{error:'TASK_LOCATION_REQUIRED'}}; }
       task.completed=true; player.taskCooldownUntil=timestamp+30000;
       result=await game.completeTask(context,uid,task.kind==='cipher'?'code':task.kind); break;
     }
@@ -263,6 +281,9 @@ function recordRoundTrack(room,player,location,timestamp) {
 
 function failTask(player,timestamp) { if (!player.activeTask) return; player.activeTask.failed=true; player.taskCooldownUntil=timestamp+120000; }
 function freshAccurate(player,timestamp) { return player.location && timestamp-(player.locationAt||0)<=10000 && Number(player.location.accuracy)<=25; }
+function hasNearbyHider(room,seekerId,location,timestamp,radius) {
+  return validPoint(location) && Object.values(room.players||{}).some(target=>target.id!==seekerId&&target.active&&target.role==='hider'&&freshAccurate(target,timestamp)&&distanceMeters(location,target.location)<=radius);
+}
 function gameRandomPoint(center,radius) { const angle=Math.random()*360, distance=Math.sqrt(Math.random())*Math.max(0,radius-40); return destinationPoint(center,distance,angle); }
 function isSanitizedJpeg(bytes) {
   if(bytes[0]!==0xff || bytes[1]!==0xd8) return false;
