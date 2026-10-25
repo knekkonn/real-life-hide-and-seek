@@ -262,9 +262,11 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
       if (!task || task.kind!=='photo' || task.id!==input.taskId || task.failed || task.completed || task.expiresAt<timestamp || !player.active || player.role!=='hider' || !['hide','playing'].includes(room.phase)) { if(task && task.kind==='photo' && !task.completed) { failTask(player,timestamp); return {room,result:{error:'INVALID_CHALLENGE'}}; } throw new Error('INVALID_CHALLENGE'); }
       if (typeof image!=='string' || image.length>25500 || !/^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(image)) { failTask(player,timestamp); return {room,result:{error:'INVALID_PHOTO'}}; }
       let bytes; try { bytes=Uint8Array.from(atob(image.slice(image.indexOf(',')+1)),char=>char.charCodeAt(0)); } catch { failTask(player,timestamp); return {room,result:{error:'INVALID_PHOTO'}}; }
-      if (bytes.length<100 || bytes.length>18500 || !isSanitizedJpeg(bytes)) { failTask(player,timestamp); return {room,result:{error:'INVALID_PHOTO'}}; }
+      const sanitized=sanitizeJpeg(bytes);
+      if (!sanitized || sanitized.length<100 || sanitized.length>18500) { failTask(player,timestamp); return {room,result:{error:'INVALID_PHOTO'}}; }
+      const safeImage=jpegDataUrl(sanitized);
       room.photoMetadata ||= {};
-      room.photoMetadata[uid]={playerId:uid,roundId:room.roundId || room.startedAt || room.createdAt,image,createdAt:timestamp};
+      room.photoMetadata[uid]={playerId:uid,roundId:room.roundId || room.startedAt || room.createdAt,image:safeImage,createdAt:timestamp};
       task.completed=true; player.taskCooldownUntil=timestamp+30000;
       result=await game.completeTask(context,uid,'photo'); break;
     }
@@ -437,34 +439,58 @@ function useTacticalAbility(room,player,input,timestamp) {
   throw new Error('INVALID_ABILITY');
 }
 function gameRandomPoint(center,radius) { const angle=Math.random()*360, distance=Math.sqrt(Math.random())*Math.max(0,radius-40); return destinationPoint(center,distance,angle); }
-function isSanitizedJpeg(bytes) {
-  if(bytes[0]!==0xff || bytes[1]!==0xd8) return false;
-  let offset=2, hasFrame=false, hasEnd=false;
+function sanitizeJpeg(bytes) {
+  if(bytes.length<4 || bytes[0]!==0xff || bytes[1]!==0xd8) return null;
+  let offset=2, hasFrame=false, hasScan=false;
+  const parts=[bytes.subarray(0,2)];
   const frameMarkers=new Set([0xc0,0xc1,0xc2,0xc3,0xc5,0xc6,0xc7,0xc9,0xca,0xcb,0xcd,0xce,0xcf]);
   while(offset<bytes.length) {
-    if(bytes[offset]!==0xff) return false;
+    const markerStart=offset;
+    if(bytes[offset]!==0xff) return null;
     while(bytes[offset]===0xff) offset++;
+    if(offset>=bytes.length) return null;
     const marker=bytes[offset++];
-    if(marker===0x00) continue;
-    if(marker===0xd9) { hasEnd=true; break; }
-    if(marker===0xd8 || marker===0x01 || marker>=0xd0&&marker<=0xd7) continue;
-    if(offset+1>=bytes.length) return false;
+    if(marker===0xd9) {
+      if(offset!==bytes.length || !hasFrame || !hasScan) return null;
+      parts.push(bytes.subarray(markerStart,offset));
+      const size=parts.reduce((sum,part)=>sum+part.length,0),out=new Uint8Array(size);
+      let cursor=0; for(const part of parts) { out.set(part,cursor); cursor+=part.length; }
+      return out;
+    }
+    if(marker===0xd8 || marker===0x01 || marker>=0xd0&&marker<=0xd7) { parts.push(bytes.subarray(markerStart,offset)); continue; }
+    if(marker===0x00 || offset+1>=bytes.length) return null;
     const segmentLength=(bytes[offset]<<8)|bytes[offset+1];
-    if(segmentLength<2 || offset+segmentLength>bytes.length) return false;
-    if(marker===0xe1) return false; // APP1 contains EXIF/XMP metadata and is never needed in a browser-reencoded photo.
+    if(segmentLength<2 || offset+segmentLength>bytes.length) return null;
     if(frameMarkers.has(marker)) {
-      if(segmentLength<8) return false;
+      if(segmentLength<8) return null;
       const data=offset+2, height=(bytes[data+1]<<8)|bytes[data+2], width=(bytes[data+3]<<8)|bytes[data+4];
-      if(!width || !height || width>320 || height>240) return false;
+      if(!width || !height || width>320 || height>240) return null;
       hasFrame=true;
     }
-    offset+=segmentLength;
+    const segmentEnd=offset+segmentLength;
+    // APP segments and COM can hold EXIF, XMP, IPTC, thumbnails, or location data.
+    // Strip them before persisting, even if a browser encoder retained metadata.
+    if(!(marker>=0xe0&&marker<=0xef)&&marker!==0xfe) parts.push(bytes.subarray(markerStart,segmentEnd));
+    offset=segmentEnd;
     if(marker===0xda) {
+      hasScan=true;
+      const scanStart=offset;
       while(offset+1<bytes.length) {
-        if(bytes[offset]===0xff && bytes[offset+1]!==0x00 && !(bytes[offset+1]>=0xd0&&bytes[offset+1]<=0xd7)) break;
-        if(bytes[offset]===0xff) offset+=2; else offset++;
+        if(bytes[offset]!==0xff) { offset++; continue; }
+        let markerOffset=offset+1;
+        while(bytes[markerOffset]===0xff) markerOffset++;
+        if(markerOffset>=bytes.length) return null;
+        const nextMarker=bytes[markerOffset];
+        if(nextMarker===0x00 || nextMarker>=0xd0&&nextMarker<=0xd7) { offset=markerOffset+1; continue; }
+        break;
       }
+      parts.push(bytes.subarray(scanStart,offset));
     }
   }
-  return hasFrame && hasEnd && offset===bytes.length;
+  return null;
+}
+function jpegDataUrl(bytes) {
+  let binary='';
+  for(const byte of bytes) binary+=String.fromCharCode(byte);
+  return `data:image/jpeg;base64,${btoa(binary)}`;
 }
