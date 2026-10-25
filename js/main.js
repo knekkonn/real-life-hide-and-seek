@@ -4,7 +4,7 @@ import { MAX_PLAYERS, MIN_PLAYERS } from './config.js';
 import { SKILLS, SKILL_IDS, DEFAULT_SETTINGS } from './skills.js';
 import {
   createRoomData, addPlayerToRoom, updateSettings, startCountdown, advanceExpiredPhase,
-  maybePayTimeReward, updatePlayerLocation, requestCatch, respondToCatch, buySkill,
+  maybePayTimeReward, updatePlayerLocation, requestCatch, buySkill,
   activateSkill, collectItemBox, completeTask, leaveRoom
 } from './game-service.js';
 import { updateLobbyMap, resetLobbyMap, initMap, updateMap, centerMap, invalidateMapSize, resetMap } from './map.js';
@@ -284,7 +284,6 @@ function attachRoomListener() {
     showGameState();
     renderAll();
     handleAnnouncement(room);
-    handleCatchRequest(room);
     handleEffects(room);
     if (priorPhase !== room.phase) onPhaseChanged(room.phase);
   }, (error) => {
@@ -432,9 +431,12 @@ function renderGame() {
   $('shopCoinCounter').textContent = `${self.coins || 0} ◈`;
   $('operativeItems').textContent = String((self.inventory || []).length);
   const cooldownLeft=Math.max(0,Math.ceil(((Number(self.taskCooldownUntil)||0)-now())/1000));
+  const tasksUnavailable=getBackendMode()!=='worker';
+  $('taskBackendNotice').classList.toggle('hidden',!tasksUnavailable);
+  if(tasksUnavailable) $('taskBackendNotice').textContent='Servergeprüfte Aufgaben sind gesperrt, bis Cloudflare Worker/D1 eingerichtet und WORKER_URL gesetzt ist.';
   $('taskCooldown').textContent=cooldownLeft ? `Aufgaben-Cooldown: ${cooldownLeft} s` : '';
   $('taskCooldown').classList.toggle('hidden',!cooldownLeft);
-  for (const id of ['startTaskBtn','visitTaskBtn','stayTaskBtn','photoTaskBtn']) if ($(id)) $(id).disabled=cooldownLeft>0 || !canUseGame() || role!=='hider';
+  for (const id of ['startTaskBtn','visitTaskBtn','stayTaskBtn','photoTaskBtn']) if ($(id)) $(id).disabled=tasksUnavailable || cooldownLeft>0 || !canUseGame() || role!=='hider';
   const inventory = self.inventory || [];
   const activeSkill = inventory[0] ? SKILLS[inventory[0]] : null;
   $('activeSkillName').textContent = activeSkill?.short || (self.effects?.shield ? 'Schild aktiv' : 'Kein Skill bereit');
@@ -527,7 +529,7 @@ function renderQuickActions() {
     actions.push({icon:'◈',title:'Täusch-Ping',detail:'Falschen Marker setzen',action:()=>startDecoyPlacement(),disabled:!canAct || !inventory.includes('decoy')});
     actions.push({icon:'⌗',title:'EMP-Falle',detail:'Falle am Standort legen',action:()=>useSkillFromInventory('trap'),disabled:!canAct || !inventory.includes('trap') || !state.ownLocation});
   }
-  actions.push({icon:'▤',title:'Field Task',detail:'Credits verdienen',action:()=>startTask('cipher'),disabled:!canAct || role!=='hider'});
+  actions.push({icon:'▤',title:'Aufgaben auswählen',detail:'Hider-Challenges öffnen',action:()=>selectTab('tasksTab'),disabled:!canAct || role!=='hider'});
   $('quickActions').innerHTML = actions.map((item,index) => `<button class="quick-action" type="button" data-quick="${index}" ${item.disabled ? 'disabled' : ''}><span>${item.icon}</span><strong>${item.title}</strong><small>${item.detail}</small></button>`).join('');
   $('quickActions').querySelectorAll('[data-quick]').forEach((button,index) => button.addEventListener('click', actions[Number(button.dataset.quick)].action));
 }
@@ -703,27 +705,12 @@ function handleAnnouncement(room) {
   const isGlobal = announcement.type === 'global' || announcement.type === 'system';
   if (!isTargeted && !isGlobal) return;
   if (announcement.type === 'system' && !['countdown','reveal','hide','playing','finished'].includes(room.phase)) return;
-  const danger = /CAPTURED|INFECTED|LOCKDOWN|TRAP/.test(announcement.title || '');
+  const danger = /CAPTURED|INFECTED|LOCKDOWN|TRAP|SHIELD/.test(announcement.title || '');
   const success = /SECURED|COMPLETE|ACQUIRED|BONUS/.test(announcement.title || '');
   toast(announcement.title || 'MISSION UPDATE', announcement.message || '', danger ? 'danger' : success ? 'success' : 'info', 4800);
   if (/CAPTURED|INFECTED|LOCKDOWN|CATCH CONFIRMATION|SPRINT ALARM/.test(announcement.title || '')) { Sound.alert(); haptic([25,40,25]); }
   else if (/SECURED|COMPLETE|ACQUIRED/.test(announcement.title || '')) { Sound.item(); haptic(25); }
   else Sound.click();
-}
-
-function handleCatchRequest(room) {
-  const request = room.pendingCatch;
-  if (!request || request.targetId !== state.uid || request.status !== 'pending') return;
-  if (state.seenCatchRequest === request.id) return;
-  state.seenCatchRequest = request.id;
-  const seeker = room.players?.[request.seekerId];
-  openModal({ kicker:'CATCH CONFIRMATION', title:'Wurdest du gefangen?', closeable:false,
-    body:`<p class="modal-copy"><strong>${displayName(seeker)}</strong> meldet eine Begegnung mit dir. Bestätige nur, wenn ihr euch tatsächlich gesehen habt.</p><div class="safety-copy">Bitte bleib in einem öffentlichen und sicheren Bereich. GPS allein ist kein Beweis für eine Gefangennahme.</div>`,
-    actions:[
-      {label:'Nein',variant:'button-secondary',onClick:async()=>{ const result=await respondToCatch(state.roomCode,state.uid,false,request.id); if (!result) throw new Error('Fanganfrage ist abgelaufen.'); state.seenCatchRequest=null; }},
-      {label:'Ja, gefangen',variant:'button-danger',onClick:async()=>{ const result=await respondToCatch(state.roomCode,state.uid,true,request.id); if (!result) throw new Error('Fanganfrage ist abgelaufen.'); state.seenCatchRequest=null; Sound.alert(); }}
-    ]
-  });
 }
 
 function handleEffects(room) {
@@ -747,13 +734,15 @@ function handleEffects(room) {
 function openCatchPicker() {
   const candidates = activePlayers().filter((player) => player.role === 'hider' && player.id !== state.uid);
   if (!candidates.length) { toast('Keine Hider verfügbar', 'Alle Hider wurden bereits gefangen oder sind nicht aktiv.', 'warn'); return; }
-  openModal({ kicker:'TARGET ACQUISITION', title:'Hider auswählen', body:`<p class="modal-copy">Wähle den Spieler, den du bei einer tatsächlichen Begegnung gefangen hast. Der Hider bestätigt den Fang auf seinem Gerät.</p><div class="modal-option-list">${candidates.map((player) => `<button type="button" class="modal-option" data-catch-target="${escapeHTML(player.id)}"><span class="player-avatar">${escapeHTML(player.name.slice(0,1).toUpperCase())}</span><span><strong>${displayName(player)}</strong><small>${player.location ? 'GPS aktiv' : 'GPS nicht verfügbar'}</small></span></button>`).join('')}</div><div class="safety-copy">Kein Fang allein anhand des GPS durchführen. Fangmeldungen nur bei realer Begegnung absenden.</div>`, actions:[{label:'Abbrechen',variant:'button-secondary'}] });
+  openModal({ kicker:'TARGET ACQUISITION', title:'Hider gefangen melden', body:`<p class="modal-copy">Wähle den Hider, den du gerade tatsächlich berührt hast. Der Fang wird sofort registriert, wenn beide Geräte aktuelles, genaues GPS melden und höchstens 30 m auseinanderliegen. Der Hider muss nichts bestätigen.</p><div class="modal-option-list">${candidates.map((player) => `<button type="button" class="modal-option" data-catch-target="${escapeHTML(player.id)}"><span class="player-avatar">${escapeHTML(player.name.slice(0,1).toUpperCase())}</span><span><strong>${displayName(player)}</strong><small>Ausgewählte Begegnung</small></span></button>`).join('')}</div><div class="safety-copy">GPS allein beweist keinen Fang. Nur bei tatsächlicher Berührung melden und in öffentlichen, sicheren Bereichen spielen.</div>`, actions:[{label:'Abbrechen',variant:'button-secondary'}] });
   $('modalBody').querySelectorAll('[data-catch-target]').forEach((button) => button.addEventListener('click', async () => {
     const targetId = button.dataset.catchTarget;
     closeModal();
-    const result = await requestCatch(state.roomCode,state.uid,targetId);
-    if (result) { Sound.click(); toast('Fang angefragt', 'Warte auf die Bestätigung des Hiders.', 'info'); }
-    else toast('Fang konnte nicht angefragt werden', 'Der Spieler ist nicht mehr aktiv oder es läuft bereits eine Anfrage.', 'warn');
+    let result;
+    try { result=await requestCatch(state.roomCode,state.uid,targetId); }
+    catch(error) { toast('Fang nicht ausgeführt',error.message,'warn'); return; }
+    if (result) { Sound.alert(); toast('Fang ausgeführt', 'Der Fang wurde sofort registriert. Ein aktiver Schild kann ihn abwehren.', 'success'); }
+    else toast('Fang nicht ausgeführt', 'Spielerstatus, frische GPS-Messungen und Nähe prüfen. Ein Hider muss nichts bestätigen.', 'warn');
   }));
 }
 
@@ -802,13 +791,13 @@ async function startTask(kind) {
     state.activeTaskId=challenge.id;
     const escapedPrompt=escapeHTML(challenge.prompt || 'Finde den Zielpunkt auf der Karte.');
     const body=kind==='cipher'
-      ? `<p class="modal-copy">${escapedPrompt}</p><label class="modal-field-label" for="taskAnswer">Entschlüsseltes Wort</label><input id="taskAnswer" class="modal-input" autocomplete="off" maxlength="8" aria-label="Entschlüsseltes Wort"><p>Falsche Antwort beendet den Versuch und startet den Cooldown.</p>`
+      ? `<p class="modal-copy">${escapedPrompt}</p><label class="modal-field-label" for="taskAnswer">12-stelliger Klartext-Code</label><input id="taskAnswer" class="modal-input" autocomplete="off" maxlength="12" minlength="12" autocapitalize="characters" spellcheck="false" aria-label="12-stelliger Klartext-Code"><p>Falsche oder zu schnelle Antworten beenden den Versuch und starten den Cooldown.</p>`
       : kind==='visit'
       ? `<p class="modal-copy">Gehe zum geheimen Punkt in der Zone. Das Ziel erscheint auf deiner Karte. Bleib in einem sicheren, öffentlichen Bereich.</p><p id="visitTaskStatus">Zielsuche läuft · 120 Sekunden</p>`
       : kind==='photo'
       ? `<p class="modal-copy">Fotografiere dein Versteck, ohne andere Personen aufzunehmen. Das Bild wird im Browser verkleinert und ohne EXIF-Daten an die Runde übertragen. Es ist für das Suchteam sichtbar und wird beim Rundenende gelöscht.</p><label class="modal-field-label" for="taskPhoto">Kamera oder Bild auswählen</label><input id="taskPhoto" class="modal-input" type="file" accept="image/jpeg,image/png,image/webp" capture="environment"><p>Nur ein kleines JPEG wird übertragen. Das Bild bleibt auf die laufende Runde beschränkt.</p>`
       : `<p class="modal-copy">Halte deinen Standort 60 Sekunden lang innerhalb von 15 m. GPS-Lücken über 10 Sekunden, zu ungenaue Messungen oder Bewegung beenden den Versuch.</p><p id="stayTaskStatus">Verbleibende Zeit: 60 s</p>`;
-    openModal({kicker:'FIELD CHALLENGE',title:kind==='cipher'?'Doppel-Chiffre knacken':kind==='visit'?'Geheimer Zielpunkt':kind==='photo'?'Versteck fotografieren':'Versteck halten',body,closeable:false,actions:[
+    openModal({kicker:'FIELD CHALLENGE',title:kind==='cipher'?'Vigenère-Code knacken':kind==='visit'?'Geheimer Zielpunkt':kind==='photo'?'Versteck fotografieren':'Versteck halten',body,closeable:false,actions:[
       {label:'Abbrechen',variant:'button-secondary',onClick:async()=>{ await workerCommand(state.roomCode,'failTask',{taskId:challenge.id}); clearInterval(state.taskProgressTimer); }},
       ...(kind==='cipher'?[{label:'Antwort prüfen',variant:'button-primary',keepOpen:true,onClick:async()=>{
         await completeTask(state.roomCode,state.uid,'code',{id:challenge.id,answer:$('taskAnswer').value});
@@ -898,9 +887,12 @@ function tick() {
   if (!room || !state.roomCode) return;
   const self=getSelf();
   const cooldownLeft=Math.max(0,Math.ceil(((Number(self?.taskCooldownUntil)||0)-now())/1000));
+  const tasksUnavailable=getBackendMode()!=='worker';
   const cooldown=$('taskCooldown');
+  const backendNotice=$('taskBackendNotice');
+  if(backendNotice) { backendNotice.classList.toggle('hidden',!tasksUnavailable); if(tasksUnavailable) backendNotice.textContent='Servergeprüfte Aufgaben sind gesperrt, bis Cloudflare Worker/D1 eingerichtet und WORKER_URL gesetzt ist.'; }
   if (cooldown) { cooldown.textContent=cooldownLeft ? `Aufgaben-Cooldown: ${cooldownLeft} s` : ''; cooldown.classList.toggle('hidden',!cooldownLeft); }
-  for (const id of ['startTaskBtn','visitTaskBtn','stayTaskBtn','photoTaskBtn']) if ($(id)) $(id).disabled=cooldownLeft>0 || !canUseGame() || self?.role!=='hider';
+  for (const id of ['startTaskBtn','visitTaskBtn','stayTaskBtn','photoTaskBtn']) if ($(id)) $(id).disabled=tasksUnavailable || cooldownLeft>0 || !canUseGame() || self?.role!=='hider';
   state.zone = evaluateZone(state.zone, {location:state.ownLocation, center:room.settings?.center, radius:room.settings?.radius, connected:state.connected, timestamp:now()});
   const labels = {inside:'Innerhalb der Zone', warning:`Zone verlassen? Rückkehr: ${state.zone.remaining} s`, outside:getBackendMode() === 'worker' ? 'Außerhalb der Zone – Server prüft die Strafe anhand frischer Messungen.' : 'Anhaltend außerhalb – Host informieren. Keine automatische Strafe.', uncertain:'GPS ungenau – keine Strafe', stale:'GPS veraltet – keine Strafe', unavailable:state.gpsError || 'GPS nicht verfügbar', offline:'Verbindung unterbrochen – keine Strafe'};
   const gpsStatus = $('gpsStatus');
