@@ -1,6 +1,6 @@
 import { validPoint } from './gps.js';
 import { mutateRoom, remoteAction } from './store.js';
-import { DEFAULT_SETTINGS, SKILLS, eligibleSkills, SKILL_IDS, skillTuning, tacticalTuning } from './skills.js';
+import { DEFAULT_SETTINGS, SKILLS, eligibleSkills, SKILL_IDS, skillTuning, tacticalTuning, TASK_RULES } from './skills.js';
 import { now, randomId, randomFrom, distanceMeters, clamp } from './utils.js';
 
 export function createRoomData(hostId, hostName) {
@@ -196,7 +196,6 @@ export async function updatePlayerLocation(code, uid, location) {
       } else prior.lastAt=timestamp;
     }
     player.locationAt = timestamp;
-    settleCloseCall(room,timestamp);
     if (!room.settings.center && room.hostId === uid && location.accuracy <= 50) {
       room.settings.center = { lat:player.location.lat, lng:player.location.lng };
     }
@@ -291,27 +290,6 @@ function freshCatchLocation(player,timestamp) {
 function freshPreciseLocation(player,timestamp) {
   return Boolean(player?.location && timestamp>=(player.locationAt||0) && timestamp-(player.locationAt||0)<=10000 && Number(player.location.accuracy)<=25);
 }
-function settleCloseCall(room,timestamp) {
-  for(const hider of Object.values(room.players||{})) {
-    const challenge=hider.effects?.closecall;
-    if(!challenge || hider.role!=='hider' || !hider.active) continue;
-    if(timestamp>challenge.expiresAt) {
-      delete hider.effects.closecall;
-      room.announcement={id:randomId('announcement'),type:'private',targetId:hider.id,title:'CLOSE_CALL_EXPIRED',message:'Die Mutprobe ist abgelaufen. Es wurden keine Punkte vergeben.',createdAt:timestamp};
-      continue;
-    }
-    const near=freshPreciseLocation(hider,timestamp) && Object.values(room.players||{}).some(candidate=>candidate.active&&candidate.role==='seeker'&&freshPreciseLocation(candidate,timestamp)&&distanceMeters(hider.location,candidate.location)<=challenge.radius);
-    if(!near) { challenge.progressSince=0; challenge.lastProofAt=timestamp; continue; }
-    if(!challenge.progressSince || timestamp-challenge.lastProofAt>12000) challenge.progressSince=timestamp;
-    challenge.lastProofAt=timestamp;
-    if(timestamp-challenge.progressSince>=challenge.duration) {
-      const reward=tacticalTuning(room.settings).closeCallReward;
-      hider.score=(Number(hider.score)||0)+reward;
-      delete hider.effects.closecall;
-      room.announcement={id:randomId('announcement'),type:'private',targetId:hider.id,title:'CLOSE_CALL_REWARDED',message:`Mutprobe geschafft: +${reward} Punkte.`,createdAt:timestamp};
-    }
-  }
-}
 function catchDistanceLimit() { return 8; }
 
 function awardPlayerHiderPoints(player,timestamp) {
@@ -335,9 +313,9 @@ export function awardElapsedHiderPoints(room,timestamp=now()) {
 
 function rewardSeekerForCatch(room,seeker,target,timestamp) {
   const remaining=Math.max(1,Object.values(room.players||{}).filter(p=>p.active&&p.role==='hider').length);
-  const radius=Math.max(50,Math.min(2000,Number(room.settings?.radius)||500));
-  const credits=Math.round((30+Math.floor(radius/250)*5+Math.min(10,remaining*3))/5)*5;
-  const score=50+Math.floor(radius/250)*10+Math.min(20,remaining*5);
+  const roundScale=tacticalTuning(room.settings).scale;
+  const credits=Math.max(30,Math.round((35+Math.min(10,remaining*3))*roundScale/5)*5);
+  const score=Math.max(50,Math.round((65+Math.min(20,remaining*5))*roundScale/5)*5);
   seeker.coins=(Number(seeker.coins)||0)+credits;
   seeker.score=(Number(seeker.score)||0)+score;
   seeker.hidersFound=(Number(seeker.hidersFound)||0)+1;
@@ -514,15 +492,12 @@ export async function activateSkill(code, uid, skillId, params={}) {
     } else if (skillId === 'shield') player.effects.shield = true;
     else if (skillId === 'seekerradar') player.effects.seekerradarUntil = expiry(tuning.duration);
     else if (skillId === 'silent') player.effects.silentUntil = expiry(tuning.duration);
-    else if (skillId === 'closecall') {
-      const nearSeeker=Object.values(room.players||{}).some(candidate=>candidate.active&&candidate.role==='seeker'&&freshPreciseLocation(candidate,timestamp)&&distanceMeters(player.location,candidate.location)<=20);
-      if(player.role!=='hider' || room.phase!=='playing' || player.effects.closecall || !freshPreciseLocation(player,timestamp) || !nearSeeker) return null;
-      player.effects.closecall={startedAt:timestamp,progressSince:timestamp,lastProofAt:timestamp,expiresAt:timestamp+90000,duration:tuning.duration*1000,radius:20};
-    } else if(skillId==='freeze') {
+    else if(skillId==='freeze') {
       if(player.role!=='hider'||room.phase!=='playing'||!freshPreciseLocation(player,timestamp)) return null;
       const target=Object.values(room.players||{}).filter(candidate=>candidate.active&&candidate.role==='seeker'&&freshPreciseLocation(candidate,timestamp)&&distanceMeters(player.location,candidate.location)<=tuning.freezeRadius).sort((a,b)=>distanceMeters(player.location,a.location)-distanceMeters(player.location,b.location))[0];
       if(!target) return null;
-      target.effects ||= {}; target.effects.frozenUntil=Math.max(Number(target.effects.frozenUntil)||0,timestamp+tuning.duration*1000); target.effects.freezeSource='hider';
+      if((target.effects?.freezeImmuneUntil||target.effects?.frozenUntil||0)>timestamp) return null;
+      target.effects ||= {}; target.effects.frozenUntil=timestamp+tuning.duration*1000; target.effects.freezeImmuneUntil=target.effects.frozenUntil+20000; target.effects.freezeSource='hider';
       room.announcementForSeeker={id:randomId('announcement'),targetId:target.id,title:'FROZEN',message:`Ein Hider hat dich für ${tuning.duration} Sekunden eingefroren.`,createdAt:timestamp};
     }
     player.skillsUsed=(Number(player.skillsUsed)||0)+1;
@@ -565,7 +540,7 @@ export async function collectItemBox(code, uid, boxId) {
 export async function completeTask(code, uid, reward, proof=null) {
   const remote = remoteAction('completeTask', [code, uid, reward, proof]);
   if (remote) return remote;
-  const points = reward === 'shake' ? 15 : 25;
+  const points = TASK_RULES[reward==='code'?'cipher':reward]?.credits ?? 15;
   const result = await mutateRoom(code, (room) => {
     const player = room.players?.[uid];
     if (!player || !player.active || !['hide','playing'].includes(room.phase)) return null;
