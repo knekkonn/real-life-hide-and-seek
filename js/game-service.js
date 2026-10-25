@@ -56,8 +56,8 @@ export function updateSettings(room, uid, patch) {
   room.settings = { ...room.settings, ...safePatch, skills:{ ...room.settings.skills, ...skills } };
   if (!['classic','infected'].includes(room.settings.mode)) room.settings.mode = 'classic';
   room.settings.announcements = room.settings.announcements !== false;
-  room.settings.hideDuration = clamp(Number(room.settings.hideDuration) || 180, 120, 300);
-  room.settings.gameDuration = clamp(Number(room.settings.gameDuration) || 1200, 900, 1800);
+  room.settings.hideDuration = clamp(Number(room.settings.hideDuration) || 180, 60, 300);
+  room.settings.gameDuration = clamp(Number(room.settings.gameDuration) || 1200, 300, 1800);
   room.settings.radius = clamp(Number(room.settings.radius) || 500, 50, 2000);
   room.settings.seekerCount = clamp(Number(room.settings.seekerCount) || 1, 1, 10);
   return room;

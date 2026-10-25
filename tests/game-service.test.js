@@ -27,11 +27,14 @@ test('host settings are clamped and non-host writes are rejected', () => {
   const room = createRoomData('host-1', 'NIGHTHAWK');
   assert.equal(updateSettings(room, 'guest', { radius:1500 }), null);
   updateSettings(room, 'host-1', { hideDuration:1, gameDuration:99999, radius:2400, skills:{ sonar:false } });
-  assert.equal(room.settings.hideDuration, 120);
+  assert.equal(room.settings.hideDuration, 60);
   assert.equal(room.settings.gameDuration, 1800);
   assert.equal(room.settings.radius, 2000);
   assert.equal(room.settings.skills.sonar, false);
   assert.equal(room.settings.skills.tracker, true);
+  updateSettings(room, 'host-1', { hideDuration:1, gameDuration:1 });
+  assert.equal(room.settings.hideDuration,60);
+  assert.equal(room.settings.gameDuration,300);
 });
 
 test('start assigns exactly one initial seeker and starts synced countdown', () => {

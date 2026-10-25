@@ -58,6 +58,13 @@ test('a valid room code joins directly and enforces name and lobby rules', async
   room.phase='playing';
   await assert.rejects(applyAction(room,'another',{action:'join',name:'ANOTHER'}),/LOBBY_CLOSED/);
 });
+
+test('the multiplayer Worker accepts the new one-minute hide and five-minute match minimums', async () => {
+  const room=createRoomData('host','HOST'); room.code='1234';
+  await applyAction(room,'host',{action:'settings',patch:{hideDuration:60,gameDuration:300}});
+  assert.equal(room.settings.hideDuration,60);
+  assert.equal(room.settings.gameDuration,300);
+});
 test('a verified in-range catch is applied immediately without target confirmation', async () => {
   const room=playing();room.settings.mode='infected';
   await applyAction(room,'host',{action:'requestCatch',targetId:'guest'});

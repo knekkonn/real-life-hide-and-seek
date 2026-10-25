@@ -372,13 +372,13 @@ async function startApp() {
     $(key==='hideDuration'?'hideDurationValue':'gameDurationValue').textContent=formatTime(value*60);
     saveSettings({[key]:value*60}); Sound.click();
   };
-  $('hideDurationMinutes').addEventListener('change',()=>commitMinutes('hideDurationMinutes','hideDuration',2,5));
-  $('gameDurationMinutes').addEventListener('change',()=>commitMinutes('gameDurationMinutes','gameDuration',15,30));
+  $('hideDurationMinutes').addEventListener('change',()=>commitMinutes('hideDurationMinutes','hideDuration',1,5));
+  $('gameDurationMinutes').addEventListener('change',()=>commitMinutes('gameDurationMinutes','gameDuration',5,30));
   document.querySelectorAll('[data-step]').forEach((button) => button.addEventListener('click', () => {
     const key = button.dataset.step;
     const delta = Number(button.dataset.delta);
     const current = Number(state.room?.settings?.[key] ?? DEFAULT_SETTINGS[key]);
-    const min = key === 'hideDuration' ? 120 : 900;
+    const min = key === 'hideDuration' ? 60 : 300;
     const max = key === 'hideDuration' ? 300 : 1800;
     const value=clamp(current + delta, min, max);
     saveSettings({ [key]:value });
@@ -646,8 +646,8 @@ function renderLobby() {
   if (document.activeElement !== $('mapRadius')) $('mapRadius').value = settings.radius;
   if (document.activeElement !== $('mapRadiusNumber')) $('mapRadiusNumber').value = settings.radius;
   $('mapRadiusValue').textContent = `${settings.radius} m`;
-  if (document.activeElement !== $('hideDurationMinutes')) $('hideDurationMinutes').value = String(Math.round(settings.hideDuration/60));
-  if (document.activeElement !== $('gameDurationMinutes')) $('gameDurationMinutes').value = String(Math.round(settings.gameDuration/60));
+  if (document.activeElement !== $('hideDurationMinutes')) $('hideDurationMinutes').value = String(Math.max(1,Math.round(settings.hideDuration/60)));
+  if (document.activeElement !== $('gameDurationMinutes')) $('gameDurationMinutes').value = String(Math.max(5,Math.round(settings.gameDuration/60)));
   $('announcementsToggle').checked = settings.announcements !== false;
   const seekerCount = Number(settings.seekerCount) || 1;
   if (document.activeElement !== $('seekerCount')) $('seekerCount').value = String(seekerCount);
