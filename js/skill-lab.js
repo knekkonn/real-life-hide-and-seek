@@ -80,12 +80,7 @@ export function activateSkillLabSkill(session,skillId,{x,y}={}) {
   else if(skillId==='shield') session.effects.shield=true;
   else if(skillId==='seekerradar') session.effects.seekerradarUntil=expiresAt;
   else if(skillId==='silent') session.effects.silentUntil=expiresAt;
-  else if(skillId==='closecall') {
-    const seeker=session.actors.filter(actor=>actor.role==='seeker').sort((a,b)=>pointDistance(session.self,a,session.radius)-pointDistance(session.self,b,session.radius))[0];
-    const distance=seeker?pointDistance(session.self,seeker,session.radius):Infinity;
-    if(distance>20) return {ok:false,reason:`Trainings-Seeker ist ${Math.round(distance)} m entfernt. Stelle ihn mit dem Distanzregler auf höchstens 20 m.`};
-    session.effects.closecall={progressSince:timestamp,lastProofAt:timestamp,expiresAt:timestamp+90000,duration:tuning.duration*1000,radius:20};
-  } else if(skillId==='freeze') {
+  else if(skillId==='freeze') {
     const seeker=session.actors.filter(actor=>actor.role==='seeker').sort((a,b)=>pointDistance(session.self,a,session.radius)-pointDistance(session.self,b,session.radius))[0];
     const distance=seeker?pointDistance(session.self,seeker,session.radius):Infinity;
     if(distance>tuning.freezeRadius) return {ok:false,reason:`Trainings-Seeker ist ${Math.round(distance)} m entfernt. Stelle ihn mit dem Distanzregler auf höchstens ${tuning.freezeRadius} m.`};
@@ -99,9 +94,7 @@ export function activateSkillLabSkill(session,skillId,{x,y}={}) {
       ? `${tuning.short}: Täusch-Ping gesetzt, sichtbar für ${tuning.duration} Sekunden.`
       : skillId==='trap'
         ? `${tuning.short}: Falle mit ${tuning.trapRadius} m Wirkungsradius platziert.`
-        : skillId==='closecall'
-          ? `${tuning.short}: bleib ${tuning.duration} Sekunden innerhalb von 20 m und erhalte ${tacticalTuning({radius:session.radius}).closeCallReward} Punkte.`
-          : skillId==='freeze'
+        : skillId==='freeze'
             ? `${tuning.short}: Trainings-Seeker für ${tuning.duration} Sekunden eingefroren.`
         : skillId==='shield'
           ? `${tuning.short}: bereit, den nächsten Fangversuch abzuwehren.`
@@ -115,11 +108,13 @@ export function activateSkillLabTactical(session,ability,{mode='random',seconds=
   if(session.role!=='seeker') return {ok:false,reason:'Diese Punkte-Fähigkeiten gehören zum Suchteam.'};
   const tuning=tacticalTuning({radius:session.radius});
   if(ability==='zone') {
+    if(session.restrictedZones.length) return {ok:false,reason:'Die Trainings-Sperrzone bleibt bis zum Rundenende. Setze die Test-Runde für einen neuen Kreis zurück.'};
+    if(pointDistance({x:50,y:50},{x,y},session.radius)+tuning.zoneRadius>session.radius) return {ok:false,reason:'Der Sperrkreis muss vollständig in der Trainingszone liegen.'};
     if(session.score<tuning.zoneCost) return {ok:false,reason:`Die Sperrzone kostet ${tuning.zoneCost} Punkte.`};
     const diameter=tuning.zoneRadius*2*42/session.radius;
     session.restrictedZones.push({id:`zone-${Date.now()}`,x,y,diameter,radius:tuning.zoneRadius});
     session.score-=tuning.zoneCost;
-    session.log.unshift(`Trainings-Sperrzone gesetzt · ${tuning.zoneRadius} m · −${tuning.zoneCost} Punkte.`);
+    session.log.unshift(`Trainings-Sperrzone bis Rundenende gesetzt · ${tuning.zoneRadius} m · −${tuning.zoneCost} Punkte.`);
   } else if(ability==='relocate') {
     let targets=[];
     const hiders=session.actors.filter(actor=>actor.role==='hider');
@@ -194,25 +189,6 @@ export function attemptSkillLabCatch(session) {
 }
 
 export function skillLabSnapshot(session,timestamp=Date.now()) {
-  const challenge=session.effects.closecall;
-  if(challenge) {
-    const seeker=session.actors.filter(actor=>actor.role==='seeker').sort((a,b)=>pointDistance(session.self,a,session.radius)-pointDistance(session.self,b,session.radius))[0];
-    const close=seeker&&pointDistance(session.self,seeker,session.radius)<=challenge.radius;
-    if(timestamp>challenge.expiresAt) {
-      delete session.effects.closecall;
-      session.log.unshift('Mutprobe abgelaufen. Es wurden keine Punkte vergeben.'); session.log=session.log.slice(0,8);
-    } else if(!close) challenge.progressSince=0;
-    else {
-      if(!challenge.progressSince || timestamp-challenge.lastProofAt>12000) challenge.progressSince=timestamp;
-      challenge.lastProofAt=timestamp;
-      if(timestamp-challenge.progressSince>=challenge.duration) {
-        const reward=tacticalTuning({radius:session.radius}).closeCallReward;
-        session.score=(session.score||0)+reward;
-        delete session.effects.closecall;
-        session.log.unshift(`Mutprobe geschafft: +${reward} Punkte.`); session.log=session.log.slice(0,8);
-      }
-    }
-  }
   const jammer=fresh(session.effects.jammerUntil,timestamp);
   const sonar=fresh(session.effects.sonarUntil,timestamp);
   const tracker=fresh(session.effects.trackerUntil,timestamp);
@@ -223,6 +199,5 @@ export function skillLabSnapshot(session,timestamp=Date.now()) {
     return actor.role===session.role;
   }).map(actor=>({...actor,tracked:tracker&&session.effects.trackerTarget===actor.id,frozen:session.effects.frozenSeekerId===actor.id&&fresh(session.effects.seekerFrozenUntil,timestamp)}));
   const effects=Object.entries(session.effects).filter(([key,value])=>key.endsWith('Until')&&fresh(value,timestamp)).map(([key,value])=>({key,remainingSeconds:Math.ceil((value-timestamp)/1000)}));
-  if(session.effects.closecall) effects.push({key:'closecall',remainingSeconds:Math.max(0,Math.ceil((session.effects.closecall.duration-(timestamp-session.effects.closecall.progressSince))/1000))});
   return {actors,traps:session.traps.filter(t=>fresh(t.expiresAt,timestamp)),decoys:session.decoys.filter(d=>fresh(d.expiresAt,timestamp)),restrictedZones:[...session.restrictedZones],forcedHiders:[...session.forcedHiders],effects,jammed:jammer,inventory:[...session.inventory],placementPending:session.placementPending,caught:session.caught,score:Number(session.score)||0,timeExchangesUsed:session.timeExchangesUsed,matchSeconds:session.matchSeconds,log:[...session.log]};
 }
