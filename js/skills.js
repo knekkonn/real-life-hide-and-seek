@@ -21,7 +21,7 @@ export const TASK_RULES = Object.freeze({
   scan:{credits:25,seconds:120}, proximity:{credits:30,seconds:120}
 });
 export const DEFAULT_SETTINGS = {
-  mode: 'classic', hideDuration: 180, gameDuration: 1200, radius: 500, announcements: true, seekerCount: 1,
+  mode: 'classic', hideDuration: 180, gameDuration: 1200, radius: 500, announcements: true, seekerCount: 1, shrinkingZone:true, finalRadiusPercent:35,
   skills: Object.fromEntries(SKILL_IDS.map((id) => [id, true]))
 };
 
@@ -56,9 +56,10 @@ export function tacticalTuning(settings={}) {
   const scale=0.7+zoneScale*0.15+timeScale*0.15;
   const scaleCost=(base)=>Math.max(5,Math.round(base*scale/5)*5);
   const relocateDistance=Math.max(15,Math.min(150,Math.round(radius*0.15)));
-  const minZoneRadius=Math.max(10,Math.round(radius*0.1));
-  const maxZoneRadius=Math.floor(radius*0.45);
-  const zoneRadius=Math.round(radius*0.3);
+  const zoneBudget=Math.min(radius,Math.max(25,Number(settings?.zoneRadiusLimit)||radius));
+  const minZoneRadius=Math.max(5,Math.round(zoneBudget*0.1));
+  const maxZoneRadius=Math.floor(zoneBudget*0.45);
+  const zoneRadius=Math.max(minZoneRadius,Math.round(zoneBudget*0.3));
   // Permanent area denial: price follows its share of the field and round length.
   const zoneCostFor=(selectedRadius=zoneRadius)=>{
     const r=Math.max(minZoneRadius,Math.min(maxZoneRadius,Number(selectedRadius)||zoneRadius));
