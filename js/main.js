@@ -468,6 +468,7 @@ async function startApp() {
   $('dismissRevealBtn').addEventListener('click', () => { state.revealDismissedPhase = state.room?.phase; $('roleReveal').classList.add('hidden'); syncOverlayState(); });
   $('dismissMomentBtn').addEventListener('click',dismissMoment);
   $('shrinkingZoneToggle').addEventListener('change',event=>saveSettings({shrinkingZone:event.target.checked}));
+  $('zoneEnabledToggle').addEventListener('change',event=>saveSettings({zoneEnabled:event.target.checked}));
   $('finalRadiusPercent').addEventListener('change',event=>saveSettings({finalRadiusPercent:clamp(Math.round(Number(event.target.value)||35),25,75)}));
   $('gpsBtn').addEventListener('click', requestGPS);
   $('mapGpsBtn').addEventListener('click', requestGPS);
@@ -800,10 +801,12 @@ function renderLobby() {
   if (document.activeElement !== $('gameDurationMinutes')) $('gameDurationMinutes').value = String(Math.max(5,Math.round(settings.gameDuration/60)));
   $('announcementsToggle').checked = settings.announcements !== false;
   $('shrinkingZoneToggle').checked=settings.shrinkingZone!==false;
+  $('zoneEnabledToggle').checked=settings.zoneEnabled!==false;
   if(document.activeElement!==$('finalRadiusPercent')) $('finalRadiusPercent').value=settings.finalRadiusPercent||35;
-  $('finalRadiusPercent').disabled=!isHost()||settings.shrinkingZone===false;
+  $('shrinkingZoneToggle').disabled=!isHost()||settings.zoneEnabled===false;
+  $('finalRadiusPercent').disabled=!isHost()||settings.zoneEnabled===false||settings.shrinkingZone===false;
   const plan=createZonePlan(settings,0);
-  $('zoneSettingsSummary').textContent=settings.shrinkingZone===false?'Der Radius bleibt während der gesamten Runde gleich.':`${settings.radius} m → etwa ${Math.round(plan.finalRadius)} m Radius. Start nach ${formatTime(plan.startsAt/1000)}, Endzone nach ${formatTime(plan.endsAt/1000)}. Der Rand bewegt sich höchstens 1 m pro Sekunde.`;
+  $('zoneSettingsSummary').textContent=settings.zoneEnabled===false?'Zone aus: keine Begrenzung und keine Zonenstrafen.':settings.shrinkingZone===false?'Der Radius bleibt während der gesamten Runde gleich.':`${settings.radius} m → etwa ${Math.round(plan.finalRadius)} m Radius. Start nach ${formatTime(plan.startsAt/1000)}, Endzone nach ${formatTime(plan.endsAt/1000)}. Der Rand bewegt sich höchstens 1 m pro Sekunde.`;
   const seekerCount = Number(settings.seekerCount) || 1;
   if (document.activeElement !== $('seekerCount')) $('seekerCount').value = String(seekerCount);
   const maxSeekers=Math.max(1,Math.min(10,active.length-1));
@@ -990,10 +993,12 @@ function renderZoneHud() {
   const hud=$('zoneHud'),room=state.room;
   if(!hud||!room) return;
   const zone=getPlayZone(room,now()), self=getSelf();
+  hud.classList.toggle('is-disabled',zone.enabled===false);
   hud.classList.toggle('is-closing',zone.status==='closing');
   hud.classList.toggle('is-outside',state.zone?.status==='outside');
-  $('zoneHudTitle').textContent=zone.shrinking?`Zone · ${Math.round(zone.radius)} m`:`Zone · ${Math.round(zone.radius)} m`;
-  if(zone.status==='waiting') $('zoneHudCopy').textContent=`Schrumpft in ${formatTime(zone.secondsUntilChange)} · danach maximal 1 m/s`;
+  $('zoneHudTitle').textContent=zone.enabled===false?'Zone aus':`Zone · ${Math.round(zone.radius)} m`;
+  if(zone.enabled===false) $('zoneHudCopy').textContent='Freies Spielfeld · keine Grenze oder Zonenstrafe';
+  else if(zone.status==='waiting') $('zoneHudCopy').textContent=`Schrumpft in ${formatTime(zone.secondsUntilChange)} · danach maximal 1 m/s`;
   else if(zone.status==='closing') $('zoneHudCopy').textContent=`Nächster Check in ${Math.min(60,zone.secondsUntilChange||60)} s · Ziel ${Math.round(zone.finalRadius)} m`;
   else if(zone.status==='final') $('zoneHudCopy').textContent='Endzone erreicht';
   else $('zoneHudCopy').textContent=room.phase==='hide'?'Die Zone bleibt zum Rundenstart stabil.':'Zone bleibt während der Runde stabil.';
@@ -1388,7 +1393,11 @@ function handleEffects(room) {
 function openCatchPicker() {
   const candidates = activePlayers().filter((player) => player.role === 'hider' && player.id !== state.uid);
   if (!candidates.length) { toast('Keine Hider verfügbar', 'Alle Hider wurden bereits gefangen oder sind nicht aktiv.', 'warn'); return; }
-  openModal({ kicker:'TARGET ACQUISITION', title:'Hider gefangen melden', body:`<p class="modal-copy">Wähle den Hider, den du gerade tatsächlich berührt hast. Beide Geräte brauchen eine höchstens 15 Sekunden alte GPS-Messung mit maximal 60 m Ungenauigkeit. Der Fang zählt nur bei höchstens 8 m GPS-Abstand. Der Fang wird sofort registriert; der Hider muss nichts bestätigen.</p><div class="modal-option-list">${candidates.map((player) => `<button type="button" class="modal-option" data-catch-target="${escapeHTML(player.id)}"><span class="player-avatar${avatarCosmetic(player)}">${escapeHTML(player.name.slice(0,1).toUpperCase())}</span><span><strong>${displayName(player)}</strong><small>Ausgewählte Begegnung</small></span></button>`).join('')}</div><div class="safety-copy">GPS allein beweist keinen Fang. Nur bei tatsächlicher Berührung melden und in öffentlichen, sicheren Bereichen spielen.</div>`, actions:[{label:'Abbrechen',variant:'button-secondary'}] });
+  openModal({ kicker:'FANG / 8 M', title:'Wen hast du erreicht?', body:`<p class="modal-copy">Tippe den Hider an. Der Server prüft sofort beide Standorte: höchstens 15 Sekunden alt, maximal ±60 m ungenau und höchstens 8 m Abstand. Der Hider muss nichts bestätigen.</p><div class="modal-option-list">${candidates.map((player) => {
+    const fresh=player.location&&now()-(player.locationAt||0)<=15000&&player.location.accuracy<=60;
+    const distance=fresh&&state.ownLocation?Math.round(distanceMeters(state.ownLocation,player.location)):null;
+    return `<button type="button" class="modal-option catch-option" data-catch-target="${escapeHTML(player.id)}"><span class="player-avatar${avatarCosmetic(player)}">${escapeHTML(player.name.slice(0,1).toUpperCase())}</span><span><strong>${displayName(player)}</strong><small>${distance===null?'Nähe wird sicher am Server geprüft':`${distance} m · ${distance<=8?'in Fangreichweite':'außer Reichweite'}`}</small></span><b aria-hidden="true">›</b></button>`;
+  }).join('')}</div><div class="safety-copy">Nur bei tatsächlicher Berührung melden. Das Fanglimit bleibt serverseitig bei 8 m.</div>`, actions:[{label:'Schließen',variant:'button-secondary'}] });
   $('modalBody').querySelectorAll('[data-catch-target]').forEach((button) => button.addEventListener('click', async () => {
     const targetId = button.dataset.catchTarget;
     closeModal();
@@ -1403,7 +1412,7 @@ function openCatchPicker() {
       result=await requestCatch(state.roomCode,state.uid,targetId);
     }
     catch(error) {
-      const message=error?.message==='FRESH_GPS_REQUIRED'?'GPS beider Spieler muss aktiv sein; Messungen dürfen höchstens 15 Sekunden alt und maximal 60 m ungenau sein. Bitte GPS aktivieren und erneut versuchen.':error?.message==='CATCH_RANGE_REQUIRED'?'GPS liegt außerhalb des Genauigkeitsbereichs. Geht näher zusammen und versucht es erneut.':error?.message||'Bitte GPS aktivieren und erneut versuchen.';
+      const message=error?.message==='FRESH_GPS_REQUIRED'?'Beide GPS-Messungen müssen höchstens 15 Sekunden alt und maximal ±60 m ungenau sein. Bitte GPS kurz aktualisieren.':error?.message==='CATCH_RANGE_REQUIRED'?'Der Server misst noch mehr als 8 m Abstand. Geht näher zusammen und versucht es erneut.':error?.message||'Bitte GPS aktivieren und erneut versuchen.';
       toast('Fang nicht ausgeführt',message,'warn'); return;
     }
     if (result) { Sound.alert(); toast('Fang ausgeführt', 'Der Fang wurde sofort registriert. Ein aktiver Schild kann ihn abwehren.', 'success'); }
@@ -1641,7 +1650,7 @@ function tick() {
   const activeHiders=Object.values(room.players||{}).some(player=>player.active&&player.role==='hider');
   if($('scanTaskBtn')) $('scanTaskBtn').disabled=!liveSearch||!activeBoxes;
   if($('proximityTaskBtn')) $('proximityTaskBtn').disabled=!liveSearch||!activeHiders;
-  state.zone = evaluateZone(state.zone, {location:state.ownLocation, center:room.settings?.center, radius:room.settings?.radius, connected:state.connected, timestamp:now()});
+  state.zone = evaluateZone(state.zone, {location:state.ownLocation, center:room.settings?.center, radius:room.settings?.radius, connected:state.connected, timestamp:now(),enabled:room.settings?.zoneEnabled!==false});
   const labels = {inside:'Innerhalb der Zone', warning:`Zone verlassen? Rückkehr: ${state.zone.remaining} s`, outside:getBackendMode() === 'worker' ? 'Außerhalb der Zone – Server prüft die Strafe anhand frischer Messungen.' : 'Anhaltend außerhalb – Host informieren. Keine automatische Strafe.', uncertain:'GPS ungenau – keine Strafe', stale:'GPS veraltet – keine Strafe', unavailable:state.gpsError || 'GPS nicht verfügbar', offline:'Verbindung unterbrochen – keine Strafe'};
   const gpsStatus = $('gpsStatus');
   if (gpsStatus) {

@@ -183,7 +183,7 @@ export async function applyAction(source, uid, input, timestamp=Date.now(), fetc
       }
       let previous = player.zone;
       if (timestamp - (player.locationAt || 0) > 10000) previous = null;
-      const zone = evaluateZone(previous,{location:{...location,measuredAt:timestamp},center:room.settings.center,radius:getPlayZone(room,timestamp).radius,connected:true,timestamp});
+      const zone = evaluateZone(previous,{location:{...location,measuredAt:timestamp},center:room.settings.center,radius:getPlayZone(room,timestamp).radius,connected:true,timestamp,enabled:room.settings.zoneEnabled!==false});
       zone.violations = previous?.violations || player.zone?.violations || 0;
       zone.counted = previous?.counted && ['warning','outside'].includes(zone.status);
       if (room.phase === 'playing' && zone.status === 'outside' && !zone.counted) {
@@ -457,7 +457,7 @@ function failTask(player,timestamp,{penalizePhoto=false,reason='Aufgabe fehlgesc
   }
 }
 function taskPointAvailable(room,point,timestamp) {
-  if(!validPoint(point)||!validPoint(room.settings.center)||distanceMeters(point,room.settings.center)>getPlayZone(room,timestamp).radius-10) return false;
+  if(!validPoint(point)||!validPoint(room.settings.center)||room.settings.zoneEnabled!==false&&distanceMeters(point,room.settings.center)>getPlayZone(room,timestamp).radius-10) return false;
   return !Object.values(room.restrictedZones||{}).some(zone=>zone.expiresAt>timestamp&&distanceMeters(point,zone.center)<=zone.radius+10);
 }
 function settleZoneTasks(room,timestamp) {

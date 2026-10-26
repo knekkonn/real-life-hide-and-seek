@@ -21,7 +21,7 @@ export const TASK_RULES = Object.freeze({
   scan:{credits:25,seconds:120}, proximity:{credits:30,seconds:120}
 });
 export const DEFAULT_SETTINGS = {
-  mode: 'classic', hideDuration: 180, gameDuration: 1200, radius: 500, announcements: true, seekerCount: 1, shrinkingZone:true, finalRadiusPercent:35,
+  mode: 'classic', hideDuration: 180, gameDuration: 1200, radius: 500, announcements: true, seekerCount: 1, zoneEnabled:true, shrinkingZone:true, finalRadiusPercent:35,
   skills: Object.fromEntries(SKILL_IDS.map((id) => [id, true]))
 };
 

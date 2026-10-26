@@ -153,12 +153,18 @@ function putMarker(id, point, kind, label, detail='', showPopup=true) {
 export function updateMap(room, selfId, ownLocation, role, gpsSyncStatus='idle') {
   if (!map || !room) return;
   const center = room.settings?.center || ownLocation || null;
-  const radius = getPlayZone(room).radius;
+  const zone=getPlayZone(room),radius=zone.radius;
   if (center) {
-    if (!radiusCircle) radiusCircle = L.circle([center.lat,center.lng], { radius, color:'#2879e8', weight:2.5, opacity:.9, fillColor:'#2879e8', fillOpacity:.06, interactive:false }).addTo(map);
-    else radiusCircle.setLatLng([center.lat,center.lng]).setRadius(radius);
-    if (!centerMarker) centerMarker = L.circleMarker([center.lat,center.lng], { radius:3, color:'#b9ff52', fillColor:'#b9ff52', fillOpacity:1, weight:1 }).addTo(map);
-    else centerMarker.setLatLng([center.lat,center.lng]);
+    if(zone.enabled===false) {
+      if(radiusCircle) map.removeLayer(radiusCircle); radiusCircle=null;
+      if(nextZoneCircle) map.removeLayer(nextZoneCircle); nextZoneCircle=null;
+      if(centerMarker) map.removeLayer(centerMarker); centerMarker=null;
+    } else {
+      if (!radiusCircle) radiusCircle = L.circle([center.lat,center.lng], { radius, color:'#2879e8', weight:2.5, opacity:.9, fillColor:'#2879e8', fillOpacity:.06, interactive:false }).addTo(map);
+      else radiusCircle.setLatLng([center.lat,center.lng]).setRadius(radius);
+      if (!centerMarker) centerMarker = L.circleMarker([center.lat,center.lng], { radius:3, color:'#b9ff52', fillColor:'#b9ff52', fillOpacity:1, weight:1 }).addTo(map);
+      else centerMarker.setLatLng([center.lat,center.lng]);
+    }
   } else {
     if (radiusCircle) map.removeLayer(radiusCircle);
     if (centerMarker) map.removeLayer(centerMarker);
@@ -283,14 +289,23 @@ export function updateMap(room, selfId, ownLocation, role, gpsSyncStatus='idle')
 }
 
 export function updateZoneMap(room,timestamp=Date.now()) {
-  if(!map||!radiusCircle||!room?.settings?.center) return;
+  if(!map||!room?.settings?.center) return;
   const zone=getPlayZone(room,timestamp),center=room.settings.center;
+  const chip=document.getElementById('mapRadiusChip');
+  if(zone.enabled===false) {
+    if(radiusCircle) map.removeLayer(radiusCircle); radiusCircle=null;
+    if(nextZoneCircle) map.removeLayer(nextZoneCircle); nextZoneCircle=null;
+    if(centerMarker) map.removeLayer(centerMarker); centerMarker=null;
+    if(chip) chip.textContent='ZONE AUS';
+    return;
+  }
+  if(!radiusCircle) return;
   radiusCircle.setRadius(zone.radius);
   if(zone.shrinking&&zone.nextRadius<zone.radius-1) {
     if(!nextZoneCircle) nextZoneCircle=L.circle([center.lat,center.lng],{radius:zone.nextRadius,color:'#7a5bd9',weight:2,dashArray:'5 7',opacity:.75,fill:false,interactive:false}).addTo(map);
     else nextZoneCircle.setLatLng([center.lat,center.lng]).setRadius(zone.nextRadius);
   } else if(nextZoneCircle) { map.removeLayer(nextZoneCircle); nextZoneCircle=null; }
-  const chip=document.getElementById('mapRadiusChip');if(chip)chip.textContent=`${Math.round(zone.radius)} m Radius`;
+  if(chip)chip.textContent=`${Math.round(zone.radius)} m Radius`;
 }
 
 export function resetMap() {
@@ -396,9 +411,15 @@ export function updateLobbyMap(room, host, onCenter) {
     lobbyMap.on('click', (event) => lobbySelect?.({lat:event.latlng.lat,lng:event.latlng.lng}));
   }
   const center = room.settings?.center;
-  document.getElementById('lobbyZoneInfo').textContent = center ? `Radius ${room.settings.radius} m · ${center.lat.toFixed(5)}, ${center.lng.toFixed(5)}${host ? ' · Tippen oder Marker ziehen' : ''}` : 'Noch kein Mittelpunkt. Host: Karte wählen oder GPS freigeben.';
+  document.getElementById('lobbyZoneInfo').textContent = center ? `${room.settings.zoneEnabled===false?'Zone aus · keine Begrenzung':`Radius ${room.settings.radius} m`} · Mittelpunkt gesetzt${host ? ' · Tippen oder Marker ziehen' : ''}` : 'Noch kein Mittelpunkt. Host: Karte wählen oder GPS freigeben.';
   if (center) {
-    if (!lobbyCircle) {
+    if(room.settings.zoneEnabled===false) {
+      if(lobbyCircle) lobbyMap.removeLayer(lobbyCircle);
+      lobbyCircle=null;
+      if(!lobbyMarker) { lobbyMarker=L.marker([center.lat,center.lng],{draggable:host}).addTo(lobbyMap); lobbyMarker.on('dragend',()=>{const point=lobbyMarker.getLatLng();lobbySelect?.({lat:point.lat,lng:point.lng});}); }
+      else lobbyMarker.setLatLng([center.lat,center.lng]);
+      lobbyMap.setView([center.lat,center.lng],Math.max(lobbyMap.getZoom(),15));
+    } else if (!lobbyCircle) {
       lobbyCircle = L.circle([center.lat,center.lng], {radius:room.settings.radius,color:'#b9ff52'}).addTo(lobbyMap);
       lobbyMarker = L.marker([center.lat,center.lng], {draggable:host}).addTo(lobbyMap);
       lobbyMarker.on('dragend', () => { const point = lobbyMarker.getLatLng(); lobbySelect?.({lat:point.lat,lng:point.lng}); });

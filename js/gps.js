@@ -17,6 +17,7 @@ export function createZonePlan(settings, startedAt) {
 
 export function getPlayZone(room,timestamp=Date.now()) {
   const initialRadius=Math.max(50,Math.min(2000,Number(room?.settings?.radius)||500));
+  if(room?.settings?.zoneEnabled===false) return {radius:initialRadius,initialRadius,finalRadius:initialRadius,nextRadius:initialRadius,shrinking:false,enabled:false,status:'disabled',secondsUntilChange:0};
   const plan=room?.zonePlan;
   if(!plan || !['playing','finished'].includes(room.phase) || room.settings?.shrinkingZone===false) return {radius:initialRadius,initialRadius,finalRadius:initialRadius,nextRadius:initialRadius,shrinking:false,status:'fixed',secondsUntilChange:0};
   if(![plan.initialRadius,plan.finalRadius,plan.startsAt,plan.endsAt].every(Number.isFinite)||plan.endsAt<=plan.startsAt) return {radius:initialRadius,initialRadius,finalRadius:initialRadius,nextRadius:initialRadius,shrinking:false,status:'fixed',secondsUntilChange:0};
@@ -44,8 +45,9 @@ export function makeLocationSample(position, measuredAt=Date.now()) {
 
 // Pure evaluator: uncertainty interrupts the continuous, reliable 30-second window.
 // This is advisory; a trusted authority must authorize penalties separately.
-export function evaluateZone(previous, { location, center, radius, connected, timestamp }) {
+export function evaluateZone(previous, { location, center, radius, connected, timestamp, enabled=true }) {
   const base = { outsideSince:null, status:'unavailable', remaining:30 };
+  if(enabled===false) return {...base,status:'inside'};
   if (!connected) return { ...base, status:'offline' };
   if (!validPoint(center) || !validPoint(location)) return base;
   const age = timestamp - location.measuredAt;

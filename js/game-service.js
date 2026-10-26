@@ -71,13 +71,14 @@ function chooseSeekers(players,count) {
 export function updateSettings(room, uid, patch) {
   if (room.hostId !== uid || room.phase !== 'lobby') return null;
   room.settings ||= JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
-  const allowed = ['mode','hideDuration','gameDuration','radius','seekerCount','announcements','shrinkingZone','finalRadiusPercent'];
+  const allowed = ['mode','hideDuration','gameDuration','radius','seekerCount','announcements','zoneEnabled','shrinkingZone','finalRadiusPercent'];
   const safePatch = Object.fromEntries(allowed.filter((key) => key in patch).map((key) => [key, patch[key]]));
   if (patch.center && validPoint(patch.center)) safePatch.center = {lat:patch.center.lat, lng:patch.center.lng};
   const skills = Object.fromEntries(SKILL_IDS.filter((id) => typeof patch.skills?.[id] === 'boolean').map((id) => [id,patch.skills[id]]));
   room.settings = { ...room.settings, ...safePatch, skills:{ ...room.settings.skills, ...skills } };
   if (!['classic','infected'].includes(room.settings.mode)) room.settings.mode = 'classic';
   room.settings.announcements = room.settings.announcements !== false;
+  room.settings.zoneEnabled = room.settings.zoneEnabled !== false;
   room.settings.shrinkingZone = room.settings.shrinkingZone !== false;
   room.settings.finalRadiusPercent = clamp(Number(room.settings.finalRadiusPercent)||35,25,75);
   room.settings.hideDuration = clamp(Number(room.settings.hideDuration) || 180, 60, 300);
@@ -153,7 +154,7 @@ export async function advanceExpiredPhase(code, room) {
       current.announcement = { id:randomId('announcement'), type:'system', title:'HIDE PHASE', message:'Hider: findet Deckung. Seeker: Position halten.', createdAt:timestamp };
     } else if (current.phase === 'hide') {
       current.phase = 'playing';
-      current.zonePlan=current.settings.shrinkingZone!==false?createZonePlan(current.settings,timestamp):null;
+      current.zonePlan=current.settings.zoneEnabled!==false&&current.settings.shrinkingZone!==false?createZonePlan(current.settings,timestamp):null;
       current.matchEndsAt = timestamp + (Number(current.settings.gameDuration) || 1200) * 1000;
       current.phaseEndsAt = current.matchEndsAt;
       current.lastPhaseTransitionAt = timestamp;

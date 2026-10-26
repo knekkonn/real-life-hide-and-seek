@@ -15,6 +15,10 @@ body.has-immersive { overflow:hidden; }
 .topbar { height:88px; border:0; }
 .brand-name { font-size:19px; letter-spacing:-.6px; font-weight:750; }
 .brand-mark { transform:none; gap:3px; }
+.brand-mark svg { display:block; width:34px; height:34px; filter:drop-shadow(0 5px 12px rgba(54,112,227,.25)); }
+.brand-mark span { display:none; }
+.brand-name { font-weight:800; letter-spacing:.06em; }
+.brand-name>span { color:#4c78ed; }
 .brand-mark span { border-radius:5px; background:var(--neon); border-color:var(--neon); }
 .connection-badge,.status-pill,.host-label,.live-tag,.gps-button,.role-chip,.map-radius-chip { border-radius:30px; background:var(--glass); border:1px solid var(--line); color:var(--muted); font-size:11px; letter-spacing:.01em; }
 .connection-badge { padding:8px 12px; }
@@ -183,6 +187,13 @@ input::placeholder { color:var(--dim); opacity:.8; }
 .setting-group[open]>summary { border-bottom:1px solid var(--line); }
 .setting-group[open]>summary i { transform:rotate(180deg); }
 .setting-group-body { padding:10px 16px 15px; }
+.setting-group-body>.toggle-line { margin:5px 0 12px; padding:13px 14px; border:1px solid var(--line); border-radius:15px; background:var(--glass); }
+.setting-group-body>.setting-row { padding:11px 2px; }
+.catch-option>span:nth-child(2) { flex:1; }
+.catch-option> b { font-size:22px; color:var(--muted); }
+.zone-hud.is-disabled { border-color:var(--glass-edge); }
+.zone-hud.is-disabled .zone-symbol { color:var(--muted); }
+.zone-hud.is-disabled .zone-symbol::after { content:'×'; margin-left:-20px; font-size:15px; vertical-align:top; }
 .round-track-map { background:#dce6e8; }
 .award-chip { background:rgba(23,101,231,.06); border-color:rgba(23,101,231,.15); border-radius:18px; }
 .round-end-actions { gap:10px; }
