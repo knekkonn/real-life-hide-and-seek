@@ -709,3 +709,12 @@ test('server counts only continuous accurate outside evidence and applies the th
   }
   assert.equal(room.players.guest.effects.frozenUntil,timestamp+30000);
 });
+
+test('disabling the play zone removes boundary enforcement without disabling GPS-backed catches', async () => {
+  const room=playing();room.settings.zoneEnabled=false;room.players.guest.coins=50;
+  const timestamp=Date.now();
+  await applyAction(room,'guest',{action:'updatePlayerLocation',location:{lat:.01,lng:0,accuracy:5,measuredAt:timestamp}},timestamp);
+  assert.equal(room.players.guest.zone.status,'inside');
+  assert.equal(room.players.guest.zone.violations,0);
+  assert.equal(room.players.guest.coins,50);
+});
