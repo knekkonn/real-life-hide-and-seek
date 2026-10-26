@@ -939,16 +939,18 @@ function renderGame() {
     $('hideFreeze').querySelector('.freeze-icon').textContent = '⌁';
     $('hideFreeze').querySelector('.freeze-sub').textContent = 'SUCHPHASE WIRD VORBEREITET';
   }
-  const shouldReveal = phase === 'reveal' && state.revealDismissedPhase !== phase;
+  const shouldReveal = ['countdown','reveal'].includes(phase) && state.revealDismissedPhase !== phase;
   $('roleReveal').classList.toggle('hidden', !shouldReveal);
   $('roleReveal').dataset.role=role;
-  const revealSeconds=phase==='reveal'?timerSeconds():0;
-  $('roleRevealProgress').style.width=`${Math.min(100,revealSeconds/4.5*100)}%`;
-  $('roleRevealCountdown').textContent=`Los geht’s in ${revealSeconds} Sekunden`;
+  $('roleReveal').dataset.phase=phase;
+  $('dismissRevealBtn').classList.toggle('hidden',phase==='countdown');
+  const revealSeconds=['countdown','reveal'].includes(phase)?timerSeconds():0;
+  $('roleRevealProgress').style.width=`${Math.min(100,revealSeconds/(phase==='countdown'?10:4.5)*100)}%`;
+  $('roleRevealCountdown').textContent=phase==='countdown'?'Rollen werden ausgelost':`Los geht’s in ${revealSeconds} Sekunden`;
   syncOverlayState();
   $('roleRevealSymbol').textContent = role === 'seeker' ? '⊕' : '✧';
-  $('roleRevealTitle').textContent = role === 'seeker' ? 'Du bist Seeker.' : 'Du bist Hider.';
-  $('roleRevealCopy').textContent = role === 'seeker' ? 'Dein Signal wird gleich freigeschaltet. Nutze den Vorsprung der anderen, um deine Strategie zu planen.' : 'Behalte deine Position im Blick, sammle Skills und weiche dem Suchteam aus.';
+  $('roleRevealTitle').textContent = phase==='countdown' ? formatTime(revealSeconds) : role === 'seeker' ? 'Du bist Seeker.' : 'Du bist Hider.';
+  $('roleRevealCopy').textContent = phase==='countdown' ? 'Die Runde startet. Mach dich bereit.' : role === 'seeker' ? 'Dein Signal wird gleich freigeschaltet. Nutze den Vorsprung der anderen, um deine Strategie zu planen.' : 'Behalte deine Position im Blick, sammle Skills und weiche dem Suchteam aus.';
   $('catchPanel').classList.toggle('hidden', !(phase === 'playing' && role === 'seeker' && self.active));
   $('spectatorBanner').classList.toggle('hidden', role !== 'spectator');
   $('gpsBtn').textContent = state.ownLocation ? '◎ GPS verbunden' : '◎ GPS aktivieren';
@@ -1703,6 +1705,10 @@ function tick() {
     }
     const total = phase === 'hide' ? Number(room.settings.hideDuration) : phase === 'playing' ? Number(room.settings.gameDuration) : phase === 'countdown' ? 10 : phase === 'reveal' ? 5 : 0;
     $('timerProgress').style.width = `${total > 0 ? clamp(second / total * 100,0,100) : 0}%`;
+    if(phase==='countdown') {
+      $('roleRevealTitle').textContent=formatTime(second);
+      $('roleRevealCountdown').textContent='EINSATZ STARTET GLEICH';
+    }
     renderZoneHud();
     if (phase === 'hide' && currentRole() === 'seeker') $('freezeTimer').textContent = formatTime(second);
   }
