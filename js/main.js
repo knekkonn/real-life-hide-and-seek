@@ -550,9 +550,10 @@ async function startApp() {
       const touch=event.changedTouches?.[0],dx=touch?touch.clientX-touchStart.x:0,dy=touch?touch.clientY-touchStart.y:0;
       touchStart=null;
       if(Math.abs(dx)<75||Math.abs(dx)<Math.abs(dy)*1.3) return;
-      const current=gameTabs.findIndex((button)=>button.dataset.tab===document.querySelector('.tab-content.active')?.id);
-      const next=Math.max(0,Math.min(gameTabs.length-1,current+(dx<0?1:-1)));
-      if(next!==current) selectTab(gameTabs[next].dataset.tab);
+      const visibleTabs=gameTabs.filter((button)=>!button.classList.contains('hidden'));
+      const current=visibleTabs.findIndex((button)=>button.dataset.tab===document.querySelector('.tab-content.active')?.id);
+      const next=Math.max(0,Math.min(visibleTabs.length-1,current+(dx<0?1:-1)));
+      if(next!==current&&visibleTabs[next]) selectTab(visibleTabs[next].dataset.tab);
     },{passive:true});
   });
   window.addEventListener('unhandledrejection', (event) => { event.preventDefault(); toast('Aktion nicht bestätigt', event.reason?.message || 'Bitte Verbindung prüfen und erneut versuchen.', 'danger'); });
@@ -876,6 +877,11 @@ function renderGame() {
   const room = state.room;
   const self = getSelf();
   if (!self) { toast('Spieler nicht gefunden', 'Tritt dem Raum erneut bei.', 'danger'); return; }
+  const abilitiesDisabled = SKILL_IDS.every((id) => room.settings?.skills?.[id] === false);
+  const abilitiesTab = document.querySelector('.game-tab[data-tab="shopTab"]');
+  abilitiesTab?.classList.toggle('hidden', abilitiesDisabled);
+  abilitiesTab?.setAttribute('aria-hidden', String(abilitiesDisabled));
+  if (abilitiesDisabled && state.currentTab === 'shopTab') selectTab('mapTab');
   const phase = room.phase;
   const role = self.role || 'waiting';
   $('gameRoomCode').textContent = state.roomCode;
@@ -1234,6 +1240,8 @@ function renderRoundResults(room) {
 }
 
 function selectTab(tabId) {
+  const tabButton = document.querySelector(`.game-tab[data-tab="${tabId}"]`);
+  if (!tabButton || tabButton.classList.contains('hidden')) tabId = 'mapTab';
   state.currentTab = tabId;
   document.querySelectorAll('.game-tab').forEach((button) => {
     const active = button.dataset.tab === tabId;
