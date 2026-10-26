@@ -1,8 +1,10 @@
 import { SKILLS } from './skills.js';
+import { getPlayZone } from './gps.js';
 import { escapeHTML, now, distanceMeters, bearingDegrees, formatTime } from './utils.js';
 
 let map = null;
 let radiusCircle = null;
+let nextZoneCircle = null;
 let restrictedCircles = new Map();
 let relocationCircle = null;
 let centerMarker = null;
@@ -41,6 +43,11 @@ export function initMap() {
   if (!mapElement || !window.L) return null;
   if (map) return map;
   map = L.map(mapElement, { zoomControl:true, preferCanvas:true, zoomSnap:.5 }).setView([52.52,13.405], 12);
+  map.on('popupopen', event => {
+    const button=event.popup.getElement()?.querySelector('[data-map-collect]');
+    if(!button) return;
+    button.addEventListener('click',()=>window.dispatchEvent(new CustomEvent('hideseek:collect-cache',{detail:{boxId:button.dataset.mapCollect}})),{once:true});
+  });
   addFreeMapTiles(map);
   map.on('load', () => {});
   compassOverlay = document.createElement('div');
@@ -117,7 +124,8 @@ function putMarker(id, point, kind, label, detail='', showPopup=true) {
   if (!map || !point || !Number.isFinite(point.lat) || !Number.isFinite(point.lng)) return;
   const existing = mapMarkers.get(id);
   label = escapeHTML(label || '');
-  const popupHtml = showPopup && label ? `<strong>${label}</strong>${detail ? `<br>${escapeHTML(detail)}` : ''}` : '';
+  const safeDetail=id.startsWith('box:') ? detail : escapeHTML(detail);
+  const popupHtml = showPopup && label ? `<strong>${label}</strong>${detail ? `<br>${safeDetail}` : ''}` : '';
   if (existing) {
     existing.setLatLng([point.lat, point.lng]);
     if (existing._hideSeekKind !== kind) {
@@ -132,7 +140,9 @@ function putMarker(id, point, kind, label, detail='', showPopup=true) {
       existing._hideSeekPopup = '';
     }
   } else {
-    const marker = L.marker([point.lat, point.lng], { icon:markerIcon(kind), keyboard:false }).addTo(map);
+    const marker = L.marker([point.lat, point.lng], { icon:markerIcon(kind), keyboard:id.startsWith('box:') });
+    if(id.startsWith('box:')) marker.on('click',()=>marker.openPopup());
+    marker.addTo(map);
     marker._hideSeekKind = kind;
     marker._hideSeekPopup = popupHtml;
     if (popupHtml) marker.bindPopup(popupHtml);
@@ -143,9 +153,9 @@ function putMarker(id, point, kind, label, detail='', showPopup=true) {
 export function updateMap(room, selfId, ownLocation, role, gpsSyncStatus='idle') {
   if (!map || !room) return;
   const center = room.settings?.center || ownLocation || null;
-  const radius = Number(room.settings?.radius) || 500;
+  const radius = getPlayZone(room).radius;
   if (center) {
-    if (!radiusCircle) radiusCircle = L.circle([center.lat,center.lng], { radius, color:'#b9ff52', weight:1.5, opacity:.66, fillColor:'#b9ff52', fillOpacity:.035, dashArray:'7 7' }).addTo(map);
+    if (!radiusCircle) radiusCircle = L.circle([center.lat,center.lng], { radius, color:'#2879e8', weight:2.5, opacity:.9, fillColor:'#2879e8', fillOpacity:.06, interactive:false }).addTo(map);
     else radiusCircle.setLatLng([center.lat,center.lng]).setRadius(radius);
     if (!centerMarker) centerMarker = L.circleMarker([center.lat,center.lng], { radius:3, color:'#b9ff52', fillColor:'#b9ff52', fillOpacity:1, weight:1 }).addTo(map);
     else centerMarker.setLatLng([center.lat,center.lng]);
@@ -191,7 +201,7 @@ export function updateMap(room, selfId, ownLocation, role, gpsSyncStatus='idle')
   const publicDecoys = Object.values(room.decoys || {}).filter((decoy) => (decoy.expiresAt || 0) > now());
   const restrictedZones=Object.values(room.restrictedZones||{}).filter(zone=>zone.expiresAt>now()&&zone.center&&Number.isFinite(zone.radius));
   const traps = Object.values(room.traps || {}).filter((trap) => (trap.expiresAt || 0) > now());
-  const itemBoxes = Object.values(room.itemBoxes || {}).filter((box) => !box.collected);
+  const itemBoxes = Object.values(room.itemBoxes || {}).filter((box) => !box.collected&&center&&distanceMeters(box.location,center)<=radius-10);
 
   for (const player of players) {
     if (!player.location || !player.active || now() - player.locationAt > 10000) continue;
@@ -244,7 +254,7 @@ export function updateMap(room, selfId, ownLocation, role, gpsSyncStatus='idle')
     const id = `box:${box.id}`;
     allowed.add(id);
     const level=Number.isFinite(box.level)?`Etage ${box.level>0?'+':''}${box.level}`:Number.isFinite(box.layer)&&box.layer!==0?`Ebene ${box.layer>0?'+':''}${box.layer}`:'';
-    putMarker(id, box.location, 'cache', 'Signal Cache', `Itembox · Nähe erforderlich${level?` · ${level}`:''}`);
+    putMarker(id, box.location, 'cache', 'Signal Cache', `Auf Karte antippen · ${level||'zum Sammeln höchstens 10 m entfernt'}<br><button type="button" class="cache-map-collect" data-map-collect="${escapeHTML(box.id)}">Cache einsammeln</button>`);
   }
   const liveRestrictions=new Set();
   for(const zone of restrictedZones) {
@@ -262,12 +272,25 @@ export function updateMap(room, selfId, ownLocation, role, gpsSyncStatus='idle')
   const mapCaption = document.getElementById('mapCaption');
   if (mapCaption) mapCaption.textContent = role === 'hider' && jammerActive ? `RADAR-JAMMER AKTIV · ${Math.ceil((room.effects.jammerUntil-now())/1000)} S` : ownLocation ? gpsSyncStatus==='synced' ? 'GPS-Signal verbunden · servergesichert und privat' : gpsSyncStatus==='syncing' ? 'GPS-Signal verbunden · Synchronisierung läuft' : gpsSyncStatus==='error'||gpsSyncStatus==='offline' ? 'GPS aktuell nur auf diesem Gerät · offline' : 'GPS-Signal verbunden · Synchronisierung ausstehend' : 'GPS wartet auf Freigabe';
   const chip = document.getElementById('mapRadiusChip');
-  if (chip) chip.textContent = `RADIUS ${radius} M`;
+  if (chip) chip.textContent = `${Math.round(radius)} m Radius`;
+  updateZoneMap(room);
   if (!boundsWasFit && (ownLocation || room.settings?.center)) {
     const viewCenter = ownLocation || room.settings.center;
-    map.setView([viewCenter.lat, viewCenter.lng], ownLocation ? 15 : 14);
+    if(radiusCircle) map.fitBounds(radiusCircle.getBounds(),{padding:[24,24],maxZoom:17,animate:false});
+    else map.setView([viewCenter.lat, viewCenter.lng], ownLocation ? 15 : 14);
     boundsWasFit = true;
   }
+}
+
+export function updateZoneMap(room,timestamp=Date.now()) {
+  if(!map||!radiusCircle||!room?.settings?.center) return;
+  const zone=getPlayZone(room,timestamp),center=room.settings.center;
+  radiusCircle.setRadius(zone.radius);
+  if(zone.shrinking&&zone.nextRadius<zone.radius-1) {
+    if(!nextZoneCircle) nextZoneCircle=L.circle([center.lat,center.lng],{radius:zone.nextRadius,color:'#7a5bd9',weight:2,dashArray:'5 7',opacity:.75,fill:false,interactive:false}).addTo(map);
+    else nextZoneCircle.setLatLng([center.lat,center.lng]).setRadius(zone.nextRadius);
+  } else if(nextZoneCircle) { map.removeLayer(nextZoneCircle); nextZoneCircle=null; }
+  const chip=document.getElementById('mapRadiusChip');if(chip)chip.textContent=`${Math.round(zone.radius)} m Radius`;
 }
 
 export function resetMap() {
@@ -280,6 +303,8 @@ export function resetMap() {
   if(relocationCircle) map.removeLayer(relocationCircle);
   relocationCircle=null;
   if (radiusCircle) map.removeLayer(radiusCircle);
+  if (nextZoneCircle) map.removeLayer(nextZoneCircle);
+  nextZoneCircle=null;
   if (centerMarker) map.removeLayer(centerMarker);
   if (userCircle) map.removeLayer(userCircle);
   radiusCircle = null; centerMarker = null; userCircle = null; boundsWasFit = false;
