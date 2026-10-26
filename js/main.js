@@ -23,7 +23,7 @@ const state = {
   revealDismissedPhase:null, lastCountdownSecond:null, currentTab:'mapTab', lastCelebratedRoundId:null, lastTracksRoundId:null,
   audioOn:true, tickHandle:null, passiveRewardAt:0, shakeHandler:null, shakeTimer:null,
   shakeCount:0, shakeTarget:10, challengeDone:false, pendingTimer:null,
-  roundPhotoUrls:new Map(), roundPhotoLoads:new Set(), roundPhotoFailures:new Map()
+  roundPhotoUrls:new Map(), roundPhotoLoads:new Set(), roundPhotoFailures:new Map(), lastCatchReadyKey:''
 };
 
 const SKILL_ICONS = { sonar:'◉',tracker:'⌖',jammer:'ϟ',sprint:'⚡',sweeper:'⌁',compass:'➤',ghost:'✧',decoy:'◈',trap:'⌗',shield:'⬡',seekerradar:'◎',silent:'♧',freeze:'❄' };
@@ -879,6 +879,11 @@ function renderGame() {
   const phase = room.phase;
   const role = self.role || 'waiting';
   $('gameRoomCode').textContent = state.roomCode;
+  $('liveMiniTimer').textContent=timerText();
+  const livePlayers=Object.values(room.players||{}).filter(p=>p.active).length;
+  $('liveMiniPlayers').textContent=`${livePlayers} / ${Object.keys(room.players||{}).length}`;
+  const liveZone=getPlayZone(room,now());
+  $('liveMiniZone').textContent=liveZone.enabled===false?'Frei':`${Math.round(liveZone.radius)} m`;
   $('phaseLabel').textContent = PHASE_LABELS[phase] || 'LIVE MATCH';
   $('roundEndScreen').classList.toggle('hidden', phase !== 'finished');
   if (phase === 'finished') {
@@ -955,6 +960,7 @@ function renderGame() {
   $('roleRevealTitle').textContent = phase==='countdown' ? formatTime(revealSeconds) : role === 'seeker' ? 'Du bist Seeker.' : 'Du bist Hider.';
   $('roleRevealCopy').textContent = phase==='countdown' ? 'Die Runde startet. Mach dich bereit.' : role === 'seeker' ? 'Dein Signal wird gleich freigeschaltet. Nutze den Vorsprung der anderen, um deine Strategie zu planen.' : 'Behalte deine Position im Blick, sammle Skills und weiche dem Suchteam aus.';
   $('catchPanel').classList.toggle('hidden', !(phase === 'playing' && role === 'seeker' && self.active));
+  renderCatchReady(room,phase,role);
   $('spectatorBanner').classList.toggle('hidden', role !== 'spectator');
   $('gpsBtn').textContent = state.ownLocation ? '◎ GPS verbunden' : '◎ GPS aktivieren';
   $('mapNotice').classList.toggle('hidden', Boolean(state.ownLocation));
@@ -1398,26 +1404,35 @@ function openCatchPicker() {
     const distance=fresh&&state.ownLocation?Math.round(distanceMeters(state.ownLocation,player.location)):null;
     return `<button type="button" class="modal-option catch-option" data-catch-target="${escapeHTML(player.id)}"><span class="player-avatar${avatarCosmetic(player)}">${escapeHTML(player.name.slice(0,1).toUpperCase())}</span><span><strong>${displayName(player)}</strong><small>${distance===null?'Nähe wird sicher am Server geprüft':`${distance} m · ${distance<=8?'in Fangreichweite':'außer Reichweite'}`}</small></span><b aria-hidden="true">›</b></button>`;
   }).join('')}</div><div class="safety-copy">Nur bei tatsächlicher Berührung melden. Das Fanglimit bleibt serverseitig bei 8 m.</div>`, actions:[{label:'Schließen',variant:'button-secondary'}] });
-  $('modalBody').querySelectorAll('[data-catch-target]').forEach((button) => button.addEventListener('click', async () => {
-    const targetId = button.dataset.catchTarget;
-    closeModal();
-    let result;
-    try {
-      const location=await getFreshCatchLocation();
-      state.ownLocation=location;
-      state.gpsSyncStatus='syncing';
-      await updatePlayerLocation(state.roomCode,state.uid,location);
-      state.lastLocationWrite=now();
-      state.gpsSyncStatus='synced';
-      result=await requestCatch(state.roomCode,state.uid,targetId);
-    }
-    catch(error) {
-      const message=error?.message==='FRESH_GPS_REQUIRED'?'Beide GPS-Messungen müssen höchstens 15 Sekunden alt und maximal ±60 m ungenau sein. Bitte GPS kurz aktualisieren.':error?.message==='CATCH_RANGE_REQUIRED'?'Der Server misst noch mehr als 8 m Abstand. Geht näher zusammen und versucht es erneut.':error?.message||'Bitte GPS aktivieren und erneut versuchen.';
-      toast('Fang nicht ausgeführt',message,'warn'); return;
-    }
-    if (result) { Sound.alert(); toast('Fang ausgeführt', 'Der Fang wurde sofort registriert. Ein aktiver Schild kann ihn abwehren.', 'success'); }
-    else toast('Fang nicht ausgeführt', 'Spielerstatus, frische GPS-Messungen und Nähe prüfen. Ein Hider muss nichts bestätigen.', 'warn');
-  }));
+  $('modalBody').querySelectorAll('[data-catch-target]').forEach(button=>button.addEventListener('click',()=>submitCatch(button.dataset.catchTarget)));
+}
+
+function renderCatchReady(room,phase,role) {
+  const root=$('catchReadyList'); if(!root) return;
+  const ready=phase==='playing'&&role==='seeker'?room.catchReadyHiders||[]:[];
+  const key=ready.map(p=>p.id).sort().join(',');
+  if(key&&key!==state.lastCatchReadyKey) { haptic([35,45,35]); toast('Fangreichweite erreicht','Ein Hider ist innerhalb des servergeprüften 8-m-Radius.','success',2200); }
+  state.lastCatchReadyKey=key;
+  $('catchBtn').classList.toggle('hidden',ready.length>0);
+  root.innerHTML=ready.length?ready.map(player=>`<button type="button" class="catch-ready-button" data-ready-catch="${escapeHTML(player.id)}"><span><strong>${escapeHTML(player.name||'Hider')}</strong><small>GPS bestätigt · innerhalb von 8 m</small></span><b>Fangen</b></button>`).join(''):'<div class="catch-ready-empty">Noch niemand im 8-m-Radius. Die Nähe wird laufend geprüft.</div>';
+  root.querySelectorAll('[data-ready-catch]').forEach(button=>button.addEventListener('click',()=>submitCatch(button.dataset.readyCatch)));
+}
+
+async function submitCatch(targetId) {
+  if(!targetId) return;
+  closeModal();
+  try {
+    const location=await getFreshCatchLocation();
+    state.ownLocation=location; state.gpsSyncStatus='syncing';
+    await updatePlayerLocation(state.roomCode,state.uid,location);
+    state.lastLocationWrite=now(); state.gpsSyncStatus='synced';
+    const result=await requestCatch(state.roomCode,state.uid,targetId);
+    if(result) { Sound.alert(); haptic([55,35,55]); toast('Fang ausgeführt','Der Fang wurde sofort registriert. Ein aktiver Schild kann ihn abwehren.','success'); }
+    else toast('Fang nicht ausgeführt','GPS-Abstand oder Spielerstatus hat sich geändert.','warn');
+  } catch(error) {
+    const message=error?.message==='FRESH_GPS_REQUIRED'?'Beide GPS-Messungen müssen höchstens 15 Sekunden alt und maximal ±60 m ungenau sein. Bitte GPS kurz aktualisieren.':error?.message==='CATCH_RANGE_REQUIRED'?'Der Server misst noch mehr als 8 m Abstand. Geht näher zusammen und versucht es erneut.':error?.message||'Bitte GPS aktivieren und erneut versuchen.';
+    toast('Fang nicht ausgeführt',message,'warn');
+  }
 }
 
 function getFreshCatchLocation() {
@@ -1707,6 +1722,7 @@ function tick() {
     $('matchTimer').textContent = formatTime(second);
     $('freezeTimer').textContent = self?.effects?.frozenUntil>now() ? formatTime(Math.ceil((self.effects.frozenUntil-now())/1000)) : formatTime(second);
     const phase = room.phase;
+    $('liveMiniTimer').textContent=formatTime(second);
     if (['countdown','reveal'].includes(phase) && second !== state.lastCountdownSecond) {
       state.lastCountdownSecond = second;
       if (second <= 5 && second > 0) Sound.countdown();
