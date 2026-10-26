@@ -124,6 +124,9 @@ export function startCountdown(room, uid, hostLocation) {
   room.zonePlan=null;
   room.pendingCatch = null;
   room.itemBoxes = {};
+  room.itemBoxSpawnAttempts = 0;
+  room.itemBoxLastTriedAt = 0;
+  room.itemBoxSpawnInProgress = false;
   room.restrictedZones = {};
   room.traps = {};
   room.decoys = {};
