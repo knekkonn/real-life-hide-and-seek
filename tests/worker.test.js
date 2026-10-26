@@ -75,6 +75,17 @@ test('a verified in-range catch is applied immediately without target confirmati
   await assert.rejects(applyAction(room,'host',{action:'requestCatch',targetId:'guest'}),/TARGET_NOT_CATCHABLE/);
 });
 
+test('catch-ready proximity hints disclose only nearby Hider names to the Seeker', () => {
+  const room=playing(),now=Date.now();
+  room.players.host.location={lat:0,lng:0,accuracy:5,measuredAt:now}; room.players.host.locationAt=now;
+  room.players.guest.location={lat:.00002,lng:0,accuracy:5,measuredAt:now}; room.players.guest.locationAt=now;
+  const seekerView=publicRoom(room,'host',now);
+  assert.deepEqual(seekerView.catchReadyHiders.map(p=>p.id),['guest','other']);
+  assert.equal(seekerView.players.guest.location,undefined,'the proximity hint never includes GPS coordinates');
+  const hiderView=publicRoom(room,'guest',now);
+  assert.equal(hiderView.catchReadyHiders,undefined,'Hiders never receive private catch proximity hints');
+});
+
 test('player paths stay private until the round ends and are sanitized in the final room view', async () => {
   const room=playing(); const now=Date.now(); room.roundTracks={}; room.matchEndsAt=now+600000;
   await applyAction(room,'guest',{action:'updatePlayerLocation',location:{lat:.001,lng:.002,accuracy:5,measuredAt:now}},now);
@@ -340,6 +351,14 @@ test('item boxes are selected only from mapped public footways and are disabled 
   assert.ok(points.length>0);
   assert.ok(points.every(point=>Math.abs(point.location.lat)<1e-8),'cache should remain on the mapped footway');
   assert.deepEqual(await findSafeItemLocations({lat:0,lng:0},500,async()=>new Response('',{status:503})),[]);
+});
+test('public map lookups use a rounded playzone center and retry the approved second endpoint', async () => {
+  const urls=[],queries=[];
+  const fetchImpl=async(url,options)=>{urls.push(url);queries.push(new URLSearchParams(options.body).get('data'));return urls.length===1?new Response('',{status:503}):new Response(JSON.stringify({elements:[]}));};
+  await findSafeItemLocations({lat:52.123456,lng:13.654321},500,fetchImpl);
+  assert.deepEqual(urls,['https://overpass-api.de/api/interpreter','https://overpass.kumi.systems/api/interpreter']);
+  assert.match(queries[0],/around:620,52\.123,13\.654/);
+  assert.doesNotMatch(queries[0],/52\.123456|13\.654321/);
 });
 test('protected-area multipolygon relations block cache points even when boundary ways are split', async () => {
   const ring=[[ -.0001,-.0001],[-.0001,.0001],[.0001,.0001],[.0001,-.0001],[-.0001,-.0001]];
