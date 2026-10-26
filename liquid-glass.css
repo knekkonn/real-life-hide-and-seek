@@ -147,6 +147,11 @@ input::placeholder { color:var(--dim); opacity:.8; }
 .round-end,.moment-overlay,.role-reveal { position:fixed; inset:0; z-index:1600; width:100%; height:100dvh; margin:0; display:grid; place-items:center; padding:24px; overflow:auto; background:rgba(226,235,249,.84); -webkit-backdrop-filter:blur(28px) saturate(130%); backdrop-filter:blur(28px) saturate(130%); }
 .role-reveal { z-index:1900; border:0; border-radius:0; animation:glassAppear .38s ease both; }
 .role-reveal .reveal-scan { display:none; }
+.role-reveal[data-phase="countdown"] { background:radial-gradient(ellipse at 50% 42%,rgba(60,132,242,.2),transparent 48%),rgba(236,243,253,.94); }
+.role-reveal[data-phase="countdown"] .role-stage { animation:glassRole .55s cubic-bezier(.2,.8,.2,1) both; }
+.role-reveal[data-phase="countdown"] h2 { font:700 clamp(88px,24vw,190px)/.9 ui-rounded,system-ui,sans-serif; font-variant-numeric:tabular-nums; letter-spacing:-.07em; }
+.role-reveal[data-phase="countdown"] .role-orbit { animation:countdownPulse 1s ease-in-out infinite alternate; }
+@keyframes countdownPulse { from { transform:scale(.94); } to { transform:scale(1.04); } }
 .role-stage { width:min(100%,520px); text-align:center; position:relative; padding:48px 25px; }
 .role-orbit { width:200px; height:200px; margin:0 auto 38px; display:grid; place-items:center; border:1px solid rgba(255,255,255,.85); border-radius:50%; background:linear-gradient(135deg,rgba(255,255,255,.72),rgba(255,255,255,.15)); box-shadow:0 15px 65px rgba(23,101,231,.16),inset 0 2px 0 white; animation:glassRole .75s cubic-bezier(.2,.8,.2,1) both; }
 .role-reveal-symbol { margin:0; width:132px; height:132px; display:grid; place-items:center; border-radius:38px; font-size:72px; color:white; background:linear-gradient(140deg,#71b8ff,#2e68e6); box-shadow:0 12px 35px rgba(37,110,220,.25),inset 0 1px 0 rgba(255,255,255,.5); }
@@ -168,6 +173,16 @@ input::placeholder { color:var(--dim); opacity:.8; }
 .round-end-card { width:min(100%,680px); max-height:calc(100dvh - 48px); animation:glassRole .5s ease both; }
 .round-end-card h2 { animation:none; color:var(--text); }
 .round-result-row strong,.round-track-key strong { color:var(--text); }
+.setting-group { margin:12px 0; border:1px solid var(--line); border-radius:18px; overflow:hidden; background:var(--panel-2); }
+.setting-group>summary { list-style:none; min-height:66px; padding:13px 17px; display:flex; justify-content:space-between; align-items:center; gap:12px; cursor:pointer; }
+.setting-group>summary::-webkit-details-marker { display:none; }
+.setting-group>summary b,.setting-group>summary small { display:block; }
+.setting-group>summary b { color:var(--text); font-size:14px; }
+.setting-group>summary small { margin-top:3px; color:var(--muted); font-size:11px; }
+.setting-group>summary i { display:grid; place-items:center; width:32px; height:32px; flex:none; border-radius:50%; background:var(--glass); color:var(--muted); font-style:normal; transition:transform .2s; }
+.setting-group[open]>summary { border-bottom:1px solid var(--line); }
+.setting-group[open]>summary i { transform:rotate(180deg); }
+.setting-group-body { padding:10px 16px 15px; }
 .round-track-map { background:#dce6e8; }
 .award-chip { background:rgba(23,101,231,.06); border-color:rgba(23,101,231,.15); border-radius:18px; }
 .round-end-actions { gap:10px; }

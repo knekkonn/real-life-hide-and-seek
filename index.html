@@ -88,6 +88,7 @@
           <div class="surface settings-panel">
             <div class="section-heading"><div><span class="section-index">01 /</span><h2>Spielparameter</h2></div><span class="host-label" id="hostBadge">★ HOST</span></div>
             <div id="hostSettings" class="settings-content">
+              <details class="setting-group" open><summary><span><b>Runde & Rollen</b><small>Modus, Teams und Zeit</small></span><i aria-hidden="true">⌄</i></summary><div class="setting-group-body">
               <label class="field-label" for="modeSelect">Spielmodus</label>
               <div class="mode-picker">
                 <label class="mode-option"><input type="radio" name="mode" value="classic" checked><span class="mode-card"><span class="mode-symbol">◉</span><strong>CLASSIC</strong><small>Gefangene werden Zuschauer</small></span></label>
@@ -96,10 +97,14 @@
               <div class="setting-row role-count-setting"><div><label for="seekerCount">Rollenverteilung</label><small><span id="hiderCountValue">2</span> Hider werden automatisch zugeteilt</small></div><div class="number-setting"><input id="seekerCount" type="number" inputmode="numeric" min="1" max="10" step="1" value="1" aria-label="Anzahl der anfänglichen Seeker"><span>Seeker</span></div></div>
               <div class="setting-row"><div><label for="hideDurationMinutes">Versteck-Phase</label><small>Vorsprung für Hider · 1–5 Min.</small></div><div class="setting-controls"><div class="stepper"><button type="button" data-step="hideDuration" data-delta="-60" aria-label="Versteckphase reduzieren">−</button><output id="hideDurationValue">03:00</output><button type="button" data-step="hideDuration" data-delta="60" aria-label="Versteckphase erhöhen">＋</button></div><label class="number-setting"><input id="hideDurationMinutes" type="number" inputmode="numeric" min="1" max="5" step="1" value="3" aria-label="Versteckphase in Minuten"><span>Min.</span></label></div></div>
               <div class="setting-row"><div><label for="gameDurationMinutes">Gesamtspieldauer</label><small>Nach Ende der Versteck-Phase · 5–30 Min.</small></div><div class="setting-controls"><div class="stepper"><button type="button" data-step="gameDuration" data-delta="-300" aria-label="Spieldauer reduzieren">−</button><output id="gameDurationValue">20:00</output><button type="button" data-step="gameDuration" data-delta="300" aria-label="Spieldauer erhöhen">＋</button></div><label class="number-setting"><input id="gameDurationMinutes" type="number" inputmode="numeric" min="5" max="30" step="1" value="20" aria-label="Gesamtspieldauer in Minuten"><span>Min.</span></label></div></div>
+              </div></details>
+              <details class="setting-group" open><summary><span><b>Spielfeld & Zone</b><small>Größe und schrumpfender Radius</small></span><i aria-hidden="true">⌄</i></summary><div class="setting-group-body">
               <div class="setting-row radius-setting"><div><label for="mapRadiusNumber">Spielradius</label><small>Ausgehend vom Host-Standort · 50–2.000 m</small></div><div class="radius-controls"><input id="mapRadius" type="range" min="50" max="2000" step="25" value="500" aria-label="Spielradius mit Regler einstellen"><label class="number-setting"><input id="mapRadiusNumber" type="number" inputmode="numeric" min="50" max="2000" step="25" value="500" aria-label="Spielradius in Metern"><span>m</span></label><output id="mapRadiusValue">500 m</output></div></div>
               <label class="toggle-line"><span><b>Schrumpfende Spielzone</b><small>Nach dem ersten Viertel wird das Spielfeld langsam kleiner</small></span><input id="shrinkingZoneToggle" type="checkbox" checked><i></i></label>
               <div class="setting-row"><div><label for="finalRadiusPercent">Zielradius am Ende</label><small>25–75 % · mindestens 25 m</small></div><label class="number-setting"><input id="finalRadiusPercent" type="number" inputmode="numeric" min="25" max="75" step="5" value="35"><span>%</span></label></div>
               <p id="zoneSettingsSummary" class="zone-setting-copy">Die Zone zieht sich langsam zusammen. Auf großen Feldern passt sich die Geschwindigkeit an.</p>
+              </div></details>
+              <details class="setting-group"><summary><span><b>Fähigkeiten & Hinweise</b><small>Verfügbare Spielaktionen anpassen</small></span><i aria-hidden="true">⌄</i></summary><div class="setting-group-body">
               <div class="settings-divider"></div>
               <div class="subsection-title"><span>▣</span><div><strong>Fähigkeiten-Pool</strong><small>Wähle, welche Skills verfügbar sind</small></div></div>
               <div class="skill-toggles" id="skillToggles">
@@ -119,6 +124,7 @@
               </div>
               <div class="settings-divider"></div>
               <label class="toggle-line announcement-toggle"><span><b>Gefangen-Meldungen</b><small>Banner und Alarm-Sound für alle Spieler</small></span><input id="announcementsToggle" type="checkbox" checked><i></i></label>
+              </div></details>
             </div>
             <div class="surface zone-preview"><h3>Spielzone</h3><p id="lobbyZoneInfo">Host: Mittelpunkt durch Tippen wählen oder Marker verschieben.</p><div id="lobbyMap" aria-label="Spielzone auswählen"></div><button type="button" id="lobbyGpsBtn" class="button button-secondary">◎ GPS ausdrücklich freigeben</button><p>GPS wird nach Freigabe an das konfigurierte Backend übertragen. Im sicheren Worker-Modus werden fremde Positionen nur während berechtigter Fähigkeiten freigegeben. Ohne Worker ist dies eine ungeschützte Testversion.</p></div><div id="guestSettingsNote" class="guest-note hidden">Nur der Host kann die Einstellungen ändern.</div>
           </div>
