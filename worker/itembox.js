@@ -78,13 +78,16 @@ export async function findSafeItemLocations(center,radius,fetchImpl=fetch) {
       for(let i=1;i<way.geometry.length;i++) {
         const a={lat:way.geometry[i-1].lat,lng:way.geometry[i-1].lon}, b={lat:way.geometry[i].lat,lng:way.geometry[i].lon};
         const length=distanceMeters(a,b);
-        if(length>=8 && length<=120 && distanceMeters(center,a)<radius && distanceMeters(center,b)<radius) segments.push({a,b,length,level:way.tags.level??null,layer:way.tags.layer??null});
+        // OSM ways are split into short segments around intersections, but long
+        // straight mapped paths are common too. Keep those and sample only the
+        // part that actually falls inside the play circle below.
+        if(length>=8 && length<=500) segments.push({a,b,length,level:way.tags.level??null,layer:way.tags.layer??null});
       }
     }
     const result=[];
     for(let attempt=0;attempt<segments.length*3 && result.length<5;attempt++) {
       const segment=segments[Math.floor(Math.random()*segments.length)]; if(!segment) break;
-      const fraction=.15+Math.random()*.7;
+      const fraction=.05+Math.random()*.9;
       const point=destinationPoint(segment.a,segment.length*fraction,bearingDegrees(segment.a,segment.b));
       if(distanceMeters(center,point)>radius-Math.min(20,radius*.2) || blocked.some(p=>nearPolygon(point,p))) continue;
       if(result.some(existing=>distanceMeters(existing.location,point)<Math.min(80,radius*.7))) continue;

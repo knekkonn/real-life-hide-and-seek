@@ -56,7 +56,6 @@ let audioContext = null;
 let tensionTimer = null;
 let tensionStep = 0;
 
-
 function getAudioContext() {
   const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
   if (!AudioContextCtor) return null;

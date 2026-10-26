@@ -1,4 +1,4 @@
-import { validPoint } from './gps.js';
+import { validPoint, createZonePlan, getPlayZone, playSettings } from './gps.js';
 import { mutateRoom, remoteAction } from './store.js';
 import { DEFAULT_SETTINGS, SKILLS, eligibleSkills, SKILL_IDS, skillTuning, tacticalTuning, TASK_RULES } from './skills.js';
 import { now, randomId, randomFrom, distanceMeters, clamp } from './utils.js';
@@ -71,13 +71,15 @@ function chooseSeekers(players,count) {
 export function updateSettings(room, uid, patch) {
   if (room.hostId !== uid || room.phase !== 'lobby') return null;
   room.settings ||= JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
-  const allowed = ['mode','hideDuration','gameDuration','radius','seekerCount','announcements'];
+  const allowed = ['mode','hideDuration','gameDuration','radius','seekerCount','announcements','shrinkingZone','finalRadiusPercent'];
   const safePatch = Object.fromEntries(allowed.filter((key) => key in patch).map((key) => [key, patch[key]]));
   if (patch.center && validPoint(patch.center)) safePatch.center = {lat:patch.center.lat, lng:patch.center.lng};
   const skills = Object.fromEntries(SKILL_IDS.filter((id) => typeof patch.skills?.[id] === 'boolean').map((id) => [id,patch.skills[id]]));
   room.settings = { ...room.settings, ...safePatch, skills:{ ...room.settings.skills, ...skills } };
   if (!['classic','infected'].includes(room.settings.mode)) room.settings.mode = 'classic';
   room.settings.announcements = room.settings.announcements !== false;
+  room.settings.shrinkingZone = room.settings.shrinkingZone !== false;
+  room.settings.finalRadiusPercent = clamp(Number(room.settings.finalRadiusPercent)||35,25,75);
   room.settings.hideDuration = clamp(Number(room.settings.hideDuration) || 180, 60, 300);
   room.settings.gameDuration = clamp(Number(room.settings.gameDuration) || 1200, 300, 1800);
   room.settings.radius = clamp(Number(room.settings.radius) || 500, 50, 2000);
@@ -119,6 +121,7 @@ export function startCountdown(room, uid, hostLocation) {
   room.startedAt = now();
   room.phaseEndsAt = now() + 10_000;
   room.matchEndsAt = null;
+  room.zonePlan=null;
   room.pendingCatch = null;
   room.itemBoxes = {};
   room.restrictedZones = {};
@@ -147,6 +150,7 @@ export async function advanceExpiredPhase(code, room) {
       current.announcement = { id:randomId('announcement'), type:'system', title:'HIDE PHASE', message:'Hider: findet Deckung. Seeker: Position halten.', createdAt:timestamp };
     } else if (current.phase === 'hide') {
       current.phase = 'playing';
+      current.zonePlan=current.settings.shrinkingZone!==false?createZonePlan(current.settings,timestamp):null;
       current.matchEndsAt = timestamp + (Number(current.settings.gameDuration) || 1200) * 1000;
       current.phaseEndsAt = current.matchEndsAt;
       current.lastPhaseTransitionAt = timestamp;
@@ -423,7 +427,7 @@ export async function buySkill(code, uid, skillId) {
     if (!player || !player.active || player.role !== skill.side) return null;
     if (room.phase !== 'playing' && !(player.role === 'hider' && room.phase === 'hide')) return null;
     if (room.settings.skills?.[skillId] === false) return null;
-    const tuning=skillTuning(skillId,room.settings);
+    const tuning=skillTuning(skillId,playSettings(room));
     if ((Number(player.coins) || 0) < tuning.price) return null;
     player.coins -= tuning.price;
     player.inventory ||= [];
@@ -448,7 +452,7 @@ export async function activateSkill(code, uid, skillId, params={}) {
     const inventoryIndex = (player.inventory || []).indexOf(skillId);
     if (inventoryIndex < 0) return null;
     const timestamp = now();
-    const tuning=skillTuning(skillId,room.settings);
+    const tuning=skillTuning(skillId,playSettings(room));
     if (skillId==='decoy' && !params.location && !player.location) return null;
     if (skillId==='trap' && !player.location) return null;
     if (inventoryIndex >= 0) player.inventory.splice(inventoryIndex, 1);
@@ -480,7 +484,7 @@ export async function activateSkill(code, uid, skillId, params={}) {
     else if (skillId === 'decoy') {
       const location = params.location;
       if (!location) return null;
-      if (!room.settings.center || distanceMeters(location,room.settings.center)>Math.min(Number(room.settings.radius)||500,tuning.decoyRange)) return null;
+      if (!room.settings.center || distanceMeters(location,room.settings.center)>Math.min(getPlayZone(room,timestamp).radius,tuning.decoyRange)) return null;
       const id = randomId('decoy');
       room.decoys ||= {};
       room.decoys[id] = { id, ownerId:uid, location:{lat:Number(location.lat),lng:Number(location.lng)}, createdAt:timestamp, expiresAt:expiry(tuning.duration) };

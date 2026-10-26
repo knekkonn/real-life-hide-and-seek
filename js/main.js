@@ -1,4 +1,5 @@
-import { evaluateZone, makeLocationSample, validPoint } from './gps.js';
+import { evaluateZone, makeLocationSample, validPoint, getPlayZone, createZonePlan, playSettings } from './gps.js';
+import { updateZoneMap } from './map.js';
 import { compressRoundPhoto } from './photos.js';
 import { initBackend, getBackendMode, getPlayerUid, getAccountInfo, registerAccount, signInAccount, signOutAccount, sendAccountPasswordReset, getAccountProfile, saveAccountProfile, enableProtectedTestMode, createRoom, getRoom, mutateRoom, subscribeRoom, subscribeConnection, workerCommand, fetchRoundPhoto } from './backend.js';
 import { MAX_PLAYERS, MIN_PLAYERS } from './config.js';
@@ -295,7 +296,23 @@ function showMoment(title, detail='', type='start', icon='✦', duration=2400) {
   const overlay=$('momentOverlay'); if(!overlay) return;
   $('momentTitle').textContent=title; $('momentDetail').textContent=detail; $('momentKicker').textContent=type==='caught'?'OPERATIVE FOUND':type==='catch'?'TARGET SECURED':type==='win'?'VICTORY CONFIRMED':'MISSION UPDATE'; $('momentIcon').textContent=icon;
   overlay.classList.toggle('is-caught',type==='caught'); overlay.classList.remove('hidden');
-  clearTimeout(state.momentTimer); state.momentTimer=window.setTimeout(()=>overlay.classList.add('hidden'),duration);
+  syncOverlayState();
+  clearTimeout(state.momentTimer); state.momentTimer=window.setTimeout(dismissMoment,duration);
+}
+function dismissMoment() { clearTimeout(state.momentTimer); $('momentOverlay').classList.add('hidden'); syncOverlayState(); }
+function syncOverlayState() {
+  const active=['modalRoot','roleReveal','momentOverlay','roundEndScreen'].map(id=>$(id)).find(el=>el&&!el.classList.contains('hidden'));
+  document.body.classList.toggle('has-immersive',Boolean(active));
+  document.querySelector('.app-shell').inert=Boolean(active&&active.id!=='roundEndScreen');
+  if(active!==state.focusedOverlay) {
+    if(active) {
+      if(!state.focusedOverlay) state.overlayReturnFocus=document.activeElement;
+      const focus=active.querySelector('button:not(:disabled):not(.hidden)')||active;
+      if(!focus.hasAttribute('tabindex')&&focus.tagName!=='BUTTON') focus.tabIndex=-1;
+      focus.focus({preventScroll:true});
+    } else if(state.overlayReturnFocus?.isConnected) state.overlayReturnFocus.focus({preventScroll:true});
+    state.focusedOverlay=active;
+  }
 }
 
 function openModal({ kicker='FIELD PROTOCOL', title='Bestätigung', body='', actions=[], closeable=true }) {
@@ -322,10 +339,12 @@ function openModal({ kicker='FIELD PROTOCOL', title='Bestätigung', body='', act
     $('modalActions').appendChild(button);
   }
   $('modalRoot').classList.remove('hidden');
+  syncOverlayState();
   if (closeable) $('modalCloseBtn').focus({ preventScroll:true });
 }
 function closeModal() {
   $('modalRoot').classList.add('hidden');
+  syncOverlayState();
   stopShakeChallenge();
 }
 
@@ -446,7 +465,10 @@ async function startApp() {
   $('leaveBtn').addEventListener('click', confirmLeaveRoom);
   $('copyCodeBtn').addEventListener('click', copyRoomCode);
   $('startGameBtn').addEventListener('click', startGame);
-  $('dismissRevealBtn').addEventListener('click', () => { state.revealDismissedPhase = state.room?.phase; $('roleReveal').classList.add('hidden'); });
+  $('dismissRevealBtn').addEventListener('click', () => { state.revealDismissedPhase = state.room?.phase; $('roleReveal').classList.add('hidden'); syncOverlayState(); });
+  $('dismissMomentBtn').addEventListener('click',dismissMoment);
+  $('shrinkingZoneToggle').addEventListener('change',event=>saveSettings({shrinkingZone:event.target.checked}));
+  $('finalRadiusPercent').addEventListener('change',event=>saveSettings({finalRadiusPercent:clamp(Math.round(Number(event.target.value)||35),25,75)}));
   $('gpsBtn').addEventListener('click', requestGPS);
   $('mapGpsBtn').addEventListener('click', requestGPS);
   $('recenterMapBtn').addEventListener('click', () => {
@@ -536,6 +558,14 @@ async function startApp() {
   window.addEventListener('online', async () => { try { await initBackend(); bindConnection(); if (!state.roomCode) await restoreSession(); } catch (error) { toast('Verbindung fehlgeschlagen',error.message,'warn'); } });
   window.addEventListener('offline', () => { state.connected=false; state.zone=null; if(state.ownLocation) state.gpsSyncStatus='offline'; setConnectionBadge(); if(state.room&&state.room.phase!=='lobby') updateMap(state.room,state.uid,state.ownLocation||getSelf()?.location,currentRole(),state.gpsSyncStatus); });
   window.addEventListener('keydown', (event) => { if (event.key === 'Escape') { cancelMapPlacement(); if(state.modalCloseable && !$('modalRoot').classList.contains('hidden')) closeModal(); } });
+  window.addEventListener('keydown',event=>{
+    const overlay=state.focusedOverlay;if(!overlay||event.key!=='Tab') return;
+    const targets=[...overlay.querySelectorAll('button:not(:disabled),input:not(:disabled),select:not(:disabled),a[href],[tabindex="0"]')].filter(el=>el.getClientRects().length);
+    if(!targets.length) {event.preventDefault();overlay.focus();return;}
+    const first=targets[0],last=targets.at(-1);
+    if(event.shiftKey&&(document.activeElement===first||!targets.includes(document.activeElement))) {event.preventDefault();last.focus();}
+    else if(!event.shiftKey&&(document.activeElement===last||!targets.includes(document.activeElement))) {event.preventDefault();first.focus();}
+  });
   bindConnection();
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
     let reloadForWorkerUpdate = false;
@@ -701,11 +731,13 @@ function showGameState() {
   $('entryScreen').classList.toggle('hidden', inRoom);
   $('leaveBtn').classList.toggle('hidden', !inRoom);
   if (!inRoom) {
+    $('roleReveal').classList.add('hidden'); $('roundEndScreen').classList.add('hidden'); dismissMoment();
     $('lobbyScreen').classList.add('hidden');
     $('gameScreen').classList.add('hidden');
     return;
   }
   const phase = state.room?.phase || 'lobby';
+  if(phase==='lobby') { $('roleReveal').classList.add('hidden'); $('roundEndScreen').classList.add('hidden'); dismissMoment(); }
   $('lobbyScreen').classList.toggle('hidden', phase !== 'lobby');
   $('gameScreen').classList.toggle('hidden', phase === 'lobby');
   if (phase !== 'lobby') {
@@ -767,6 +799,11 @@ function renderLobby() {
   if (document.activeElement !== $('hideDurationMinutes')) $('hideDurationMinutes').value = String(Math.max(1,Math.round(settings.hideDuration/60)));
   if (document.activeElement !== $('gameDurationMinutes')) $('gameDurationMinutes').value = String(Math.max(5,Math.round(settings.gameDuration/60)));
   $('announcementsToggle').checked = settings.announcements !== false;
+  $('shrinkingZoneToggle').checked=settings.shrinkingZone!==false;
+  if(document.activeElement!==$('finalRadiusPercent')) $('finalRadiusPercent').value=settings.finalRadiusPercent||35;
+  $('finalRadiusPercent').disabled=!isHost()||settings.shrinkingZone===false;
+  const plan=createZonePlan(settings,0);
+  $('zoneSettingsSummary').textContent=settings.shrinkingZone===false?'Der Radius bleibt während der gesamten Runde gleich.':`${settings.radius} m → etwa ${Math.round(plan.finalRadius)} m Radius. Start nach ${formatTime(plan.startsAt/1000)}, Endzone nach ${formatTime(plan.endsAt/1000)}. Der Rand bewegt sich höchstens 1 m pro Sekunde.`;
   const seekerCount = Number(settings.seekerCount) || 1;
   if (document.activeElement !== $('seekerCount')) $('seekerCount').value = String(seekerCount);
   const maxSeekers=Math.max(1,Math.min(10,active.length-1));
@@ -904,8 +941,13 @@ function renderGame() {
   }
   const shouldReveal = phase === 'reveal' && state.revealDismissedPhase !== phase;
   $('roleReveal').classList.toggle('hidden', !shouldReveal);
+  $('roleReveal').dataset.role=role;
+  const revealSeconds=phase==='reveal'?timerSeconds():0;
+  $('roleRevealProgress').style.width=`${Math.min(100,revealSeconds/4.5*100)}%`;
+  $('roleRevealCountdown').textContent=`Los geht’s in ${revealSeconds} Sekunden`;
+  syncOverlayState();
   $('roleRevealSymbol').textContent = role === 'seeker' ? '⊕' : '✧';
-  $('roleRevealTitle').textContent = role === 'seeker' ? 'DU BIST SEEKER' : 'DU BIST HIDER';
+  $('roleRevealTitle').textContent = role === 'seeker' ? 'Du bist Seeker.' : 'Du bist Hider.';
   $('roleRevealCopy').textContent = role === 'seeker' ? 'Dein Signal wird gleich freigeschaltet. Nutze den Vorsprung der anderen, um deine Strategie zu planen.' : 'Behalte deine Position im Blick, sammle Skills und weiche dem Suchteam aus.';
   $('catchPanel').classList.toggle('hidden', !(phase === 'playing' && role === 'seeker' && self.active));
   $('spectatorBanner').classList.toggle('hidden', role !== 'spectator');
@@ -941,6 +983,20 @@ function timerSeconds() {
   return 0;
 }
 function timerText() { return formatTime(timerSeconds()); }
+
+function renderZoneHud() {
+  const hud=$('zoneHud'),room=state.room;
+  if(!hud||!room) return;
+  const zone=getPlayZone(room,now()), self=getSelf();
+  hud.classList.toggle('is-closing',zone.status==='closing');
+  hud.classList.toggle('is-outside',state.zone?.status==='outside');
+  $('zoneHudTitle').textContent=zone.shrinking?`Zone · ${Math.round(zone.radius)} m`:`Zone · ${Math.round(zone.radius)} m`;
+  if(zone.status==='waiting') $('zoneHudCopy').textContent=`Schrumpft in ${formatTime(zone.secondsUntilChange)} · danach maximal 1 m/s`;
+  else if(zone.status==='closing') $('zoneHudCopy').textContent=`Nächster Check in ${Math.min(60,zone.secondsUntilChange||60)} s · Ziel ${Math.round(zone.finalRadius)} m`;
+  else if(zone.status==='final') $('zoneHudCopy').textContent='Endzone erreicht';
+  else $('zoneHudCopy').textContent=room.phase==='hide'?'Die Zone bleibt zum Rundenstart stabil.':'Zone bleibt während der Runde stabil.';
+  if(state.zone?.status==='outside') $('zoneHudCopy').textContent=`Außerhalb · Rückkehr in ${state.zone.remaining} s`;
+}
 
 function renderRoster() {
   const players = Object.values(state.room.players || {}).sort((a,b) => {
@@ -1117,22 +1173,31 @@ function renderShop() {
 function renderNearbyItems() {
   const self = getSelf();
   const loc = state.ownLocation || self?.location;
-  const boxes = Object.values(state.room.itemBoxes || {}).filter((box) => !box.collected).map((box) => ({...box,distance:distanceMeters(loc,box.location)})).sort((a,b) => a.distance - b.distance).slice(0,4);
+  const center=state.room.settings?.center, radius=getPlayZone(state.room).radius;
+  const boxes = Object.values(state.room.itemBoxes || {}).filter((box) => !box.collected && center && distanceMeters(box.location,center)<=radius-10).map((box) => ({...box,distance:distanceMeters(loc,box.location)})).sort((a,b) => a.distance - b.distance).slice(0,4);
   if (!boxes.length) {
     $('nearbyItems').innerHTML = '<div class="empty-state">Keine aktiven Caches. Neue Signal Caches erscheinen im Einsatzgebiet.</div>';
     return;
   }
   $('nearbyItems').innerHTML = boxes.map((box) => {
     const distance = Number.isFinite(box.distance) ? Math.round(box.distance) : null;
-    const close = distance !== null && distance <= 15;
-    return `<div class="cache-row"><span class="cache-icon">▣</span><div class="cache-info"><strong>Signal Cache</strong><small>${distance === null ? 'GPS NÖTIG' : distance <= 15 ? 'IN REICHWEITE' : `${distance} M ENTFERNT`}</small></div><button type="button" data-collect-box="${box.id}" ${!close || state.room.phase !== 'playing' ? 'disabled' : ''}>${close ? 'Sammeln' : 'Lokalisieren'}</button></div>`;
+    const close = distance !== null && distance <= 10;
+    return `<div class="cache-row"><span class="cache-icon">▣</span><div class="cache-info"><strong>Signal Cache</strong><small>${distance === null ? 'GPS NÖTIG' : close ? 'IN REICHWEITE' : `${distance} M ENTFERNT`}</small></div><button type="button" data-distance="${distance ?? ''}" data-collect-box="${escapeHTML(box.id)}" ${state.room.phase !== 'playing' ? 'disabled' : ''}>${close ? 'Sammeln' : 'Lokalisieren'}</button></div>`;
   }).join('');
-  $('nearbyItems').querySelectorAll('[data-collect-box]').forEach((button) => button.addEventListener('click', async () => {
-    const result = await collectItemBox(state.roomCode, state.uid, button.dataset.collectBox);
-    if (result.ok) { Sound.item(); haptic([25,30,40]); toast('Cache gesichert', '+10 Credits hinzugefügt.', 'success'); }
-    else toast('Cache nicht erreichbar', result.reason, 'warn');
+  $('nearbyItems').querySelectorAll('[data-collect-box]').forEach((button) => button.addEventListener('click', () => {
+    if(button.dataset.distance===''||Number(button.dataset.distance)>10) centerMap(state.room.itemBoxes[button.dataset.collectBox]?.location);
+    else collectCache(button.dataset.collectBox);
   }));
 }
+
+async function collectCache(boxId) {
+    if(!boxId) return;
+    const result = await collectItemBox(state.roomCode, state.uid, boxId);
+    if (result.ok) { Sound.item(); haptic([25,30,40]); toast('Cache gesichert', '+10 Credits hinzugefügt.', 'success'); }
+    else toast('Cache nicht erreichbar', result.reason, 'warn');
+}
+
+window.addEventListener('hideseek:collect-cache',event=>collectCache(event.detail?.boxId));
 
 function renderLeaderboard() {
   const players = Object.values(state.room.players || {}).slice().sort((a,b) => {
@@ -1582,6 +1647,7 @@ function tick() {
     const ageLabel=ageSeconds===null?'':ageSeconds<2?' · Messung gerade eben':` · Messung ${ageSeconds} s alt`;
     gpsStatus.textContent=(getBackendMode()==='worker'&&self?.zone?.violations?`Bestätigte Zonenverstöße: ${self.zone.violations} · `:'')+labels[state.zone.status]+(state.ownLocation?` · ±${Math.round(state.ownLocation.accuracy)} m${ageLabel}`:'');
   }
+  renderZoneHud();
   if (isHost() && state.connected && !state.advancingPhase && ['countdown','reveal','hide','playing'].includes(room.phase) && room.phaseEndsAt && now() >= room.phaseEndsAt) {
     state.advancingPhase = true;
     advanceExpiredPhase(state.roomCode, room).catch((error) => console.warn('phase advance failed', error)).finally(() => { state.advancingPhase = false; });
@@ -1637,6 +1703,7 @@ function tick() {
     }
     const total = phase === 'hide' ? Number(room.settings.hideDuration) : phase === 'playing' ? Number(room.settings.gameDuration) : phase === 'countdown' ? 10 : phase === 'reveal' ? 5 : 0;
     $('timerProgress').style.width = `${total > 0 ? clamp(second / total * 100,0,100) : 0}%`;
+    renderZoneHud();
     if (phase === 'hide' && currentRole() === 'seeker') $('freezeTimer').textContent = formatTime(second);
   }
 }
