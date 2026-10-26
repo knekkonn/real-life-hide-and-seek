@@ -97,7 +97,7 @@ function makeLogicCodePuzzle() {
   return {answer,clues};
 }
 
-export async function applyAction(source, uid, input, timestamp=Date.now()) {
+export async function applyAction(source, uid, input, timestamp=Date.now(), fetchImpl=fetch) {
   const room = normalizeRoom(source);
   const context = {room,timestamp};
   const action = input.action;
@@ -163,7 +163,12 @@ export async function applyAction(source, uid, input, timestamp=Date.now()) {
   }
   let result;
   switch (action) {
-    case 'advanceExpiredPhase': host(room,uid); result=await game.advanceExpiredPhase(context,room); break;
+    case 'advanceExpiredPhase': {
+      host(room,uid); const previous=room.phase;
+      result=await game.advanceExpiredPhase(context,room);
+      if(previous==='hide'&&room.phase==='playing') await spawnItemBoxes(room,fetchImpl,timestamp);
+      break;
+    }
     case 'maybePayTimeReward': result=await game.maybePayTimeReward(context,uid); break;
     case 'updatePlayerLocation': {
       const location = input.location;
@@ -397,18 +402,31 @@ export async function settlePhases(room, fetchImpl=fetch) {
     if (!context.room.phaseEndsAt || context.room.phaseEndsAt>Date.now()) break;
     const previous=context.room.phase;
     if (!await game.advanceExpiredPhase(context,context.room)) break;
-    if(previous==='hide' && context.room.phase==='playing') {
-      context.room.itemBoxes={};
-      const points=await findSafeItemLocations(context.room.settings.center,Number(context.room.settings.radius)||500,fetchImpl);
-      for(const {location,level,layer} of points) {
-        const id=crypto.randomUUID();
-        context.room.itemBoxes[id]={id,location,createdAt:Date.now(),collected:false,type:Math.random()<.72?'credits':'skill',...(level===undefined?{}:{level}),...(layer===undefined?{}:{layer})};
-      }
-      context.room.announcement={id:crypto.randomUUID(),type:'system',title:'SEEK PHASE LIVE',message:points.length?`${points.length} Signal Caches auf öffentlich kartierten Wegen aktiviert.`:'Keine Signal Caches: Für diese Zone sind keine geeigneten öffentlichen Wege verzeichnet.',createdAt:Date.now()};
-    }
+    if(previous==='hide' && context.room.phase==='playing') await spawnItemBoxes(context.room,fetchImpl,Date.now());
   }
+  if(context.room.phase==='playing'&&!Object.keys(context.room.itemBoxes||{}).length&&(context.room.itemBoxSpawnAttempts||0)<4&&Date.now()-(context.room.itemBoxLastTriedAt||0)>=60000) await spawnItemBoxes(context.room,fetchImpl,Date.now());
   if(context.room.phase==='finished') context.room.photoMetadata={};
   return context.room;
+}
+
+async function spawnItemBoxes(room,fetchImpl,timestamp) {
+  if(room.itemBoxSpawnInProgress) return;
+  room.itemBoxSpawnInProgress=true;
+  room.itemBoxSpawnAttempts=(Number(room.itemBoxSpawnAttempts)||0)+1;
+  room.itemBoxLastTriedAt=timestamp;
+  try {
+    const points=await findSafeItemLocations(room.settings.center,Number(room.settings.radius)||500,fetchImpl);
+    room.itemBoxes||={};
+    for(const {location,level,layer} of points) {
+      if(Object.keys(room.itemBoxes).length>=5) break;
+      const id=crypto.randomUUID();
+      room.itemBoxes[id]={id,location,createdAt:timestamp,collected:false,type:Math.random()<.72?'credits':'skill',...(level===undefined?{}:{level}),...(layer===undefined?{}:{layer})};
+    }
+    room.itemBoxSpawnInProgress=false;
+    room.announcement={id:crypto.randomUUID(),type:'system',title:'SEEK PHASE LIVE',message:Object.keys(room.itemBoxes).length?`${Object.keys(room.itemBoxes).length} Signal Caches auf sicheren, öffentlich kartierten Wegen aktiviert.`:'Suche noch nach sicheren, kartierten Wegen für Signal Caches. Nächster Versuch in etwa einer Minute.',createdAt:timestamp};
+  } catch {
+    room.itemBoxSpawnInProgress=false;
+  }
 }
 
 function recordRoundTrack(room,player,location,timestamp) {
