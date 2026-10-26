@@ -20,7 +20,9 @@ export function publicRoom(source, uid, timestamp=Date.now()) {
   if (self.role === 'seeker' && room.phase === 'playing') {
     const roundId=room.roundId || room.startedAt || room.createdAt;
     room.roundPhotos = Object.values(photos).filter(photo => photo.roundId === roundId).map(photo => ({id:photo.playerId, name:room.players[photo.playerId]?.name || 'Hider', createdAt:photo.createdAt}));
+    room.catchReadyHiders=freshCatchLocation(self,timestamp)&&(self.effects?.frozenUntil||0)<=timestamp?Object.values(room.players||{}).filter(target=>target.id!==uid&&target.active&&target.role==='hider'&&freshCatchLocation(target,timestamp)&&distanceMeters(self.location,target.location)<=catchDistanceLimit()).map(({id,name})=>({id,name})):[];
   } else delete room.roundPhotos;
+  if(self.role!=='seeker'||room.phase!=='playing') delete room.catchReadyHiders;
   if (self.activeTask) { delete self.activeTask.answer; delete self.activeTask.shift; }
   delete room.processedActions;
   if(room.phase!=='finished') delete room.roundTracks;
