@@ -1,6 +1,7 @@
 import { bearingDegrees, destinationPoint, distanceMeters } from '../js/utils.js';
 
 const ACCESSIBLE_HIGHWAYS = new Set(['footway','path','pedestrian','steps','track','cycleway']);
+const SIDEWALK_HIGHWAYS = new Set(['residential','service','tertiary','secondary','unclassified','living_street']);
 const DENIED = /^(no|private|customers|permit)$/i;
 
 function insidePolygon(point, polygon) {
@@ -32,8 +33,9 @@ function restricted(tags={}) {
 }
 function usablePath(tags={}) {
   const footAllowed=['yes','designated','permissive'].includes(tags.foot);
-  return ACCESSIBLE_HIGHWAYS.has(tags.highway) && !restricted(tags) &&
-    (footAllowed || !tags.foot) && !(tags.cycleway==='no');
+  const mappedSidewalk=['both','left','right','yes','separate'].includes(tags.sidewalk);
+  const walkway=ACCESSIBLE_HIGHWAYS.has(tags.highway) || SIDEWALK_HIGHWAYS.has(tags.highway)&&mappedSidewalk;
+  return walkway && !restricted(tags) && (footAllowed || !tags.foot) && !(tags.cycleway==='no');
 }
 function relationRings(members=[]) {
   const lines=members.filter(m=>m.type==='way' && Array.isArray(m.geometry) && m.geometry.length>=2).map(m=>m.geometry.map(p=>({lat:p.lat,lng:p.lon})));
@@ -62,14 +64,21 @@ function relationRings(members=[]) {
 
 export async function findSafeItemLocations(center,radius,fetchImpl=fetch) {
   if(!center || !Number.isFinite(center.lat) || !Number.isFinite(center.lng) || !Number.isFinite(radius) || radius<50 || radius>2000) return [];
-  const query=`[out:json][timeout:8];(way(around:${radius},${center.lat},${center.lng})["highway"~"^(footway|path|pedestrian|steps|track|cycleway)$"];way(around:${radius},${center.lat},${center.lng})["access"~"^(no|private|customers|permit)$"];way(around:${radius},${center.lat},${center.lng})["foot"~"^(no|private)$"];way(around:${radius},${center.lat},${center.lng})["building"]["building"!="no"];way(around:${radius},${center.lat},${center.lng})["landuse"="military"];way(around:${radius},${center.lat},${center.lng})["natural"="water"];way(around:${radius},${center.lat},${center.lng})["waterway"];way(around:${radius},${center.lat},${center.lng})["leisure"="nature_reserve"];way(around:${radius},${center.lat},${center.lng})["boundary"="protected_area"];way(around:${radius},${center.lat},${center.lng})["amenity"="prison"];way(around:${radius},${center.lat},${center.lng})["power"="plant"];rel(around:${radius},${center.lat},${center.lng})["access"~"^(no|private|customers|permit)$"];rel(around:${radius},${center.lat},${center.lng})["building"]["building"!="no"];rel(around:${radius},${center.lat},${center.lng})["landuse"="military"];rel(around:${radius},${center.lat},${center.lng})["natural"="water"];rel(around:${radius},${center.lat},${center.lng})["waterway"];rel(around:${radius},${center.lat},${center.lng})["leisure"="nature_reserve"];rel(around:${radius},${center.lat},${center.lng})["boundary"="protected_area"];rel(around:${radius},${center.lat},${center.lng})["amenity"="prison"];rel(around:${radius},${center.lat},${center.lng})["power"="plant"];);out tags geom;`;
-  let response;
+  const query=`[out:json][timeout:8];(way(around:${radius},${center.lat},${center.lng})["highway"~"^(footway|path|pedestrian|steps|track|cycleway)$"];way(around:${radius},${center.lat},${center.lng})["highway"~"^(residential|service|tertiary|secondary|unclassified|living_street)$"]["sidewalk"~"^(both|left|right|yes|separate)$"];way(around:${radius},${center.lat},${center.lng})["access"~"^(no|private|customers|permit)$"];way(around:${radius},${center.lat},${center.lng})["foot"~"^(no|private)$"];way(around:${radius},${center.lat},${center.lng})["building"]["building"!="no"];way(around:${radius},${center.lat},${center.lng})["landuse"="military"];way(around:${radius},${center.lat},${center.lng})["natural"="water"];way(around:${radius},${center.lat},${center.lng})["waterway"];way(around:${radius},${center.lat},${center.lng})["leisure"="nature_reserve"];way(around:${radius},${center.lat},${center.lng})["boundary"="protected_area"];way(around:${radius},${center.lat},${center.lng})["amenity"="prison"];way(around:${radius},${center.lat},${center.lng})["power"="plant"];rel(around:${radius},${center.lat},${center.lng})["access"~"^(no|private|customers|permit)$"];rel(around:${radius},${center.lat},${center.lng})["building"]["building"!="no"];rel(around:${radius},${center.lat},${center.lng})["landuse"="military"];rel(around:${radius},${center.lat},${center.lng})["natural"="water"];rel(around:${radius},${center.lat},${center.lng})["waterway"];rel(around:${radius},${center.lat},${center.lng})["leisure"="nature_reserve"];rel(around:${radius},${center.lat},${center.lng})["boundary"="protected_area"];rel(around:${radius},${center.lat},${center.lng})["amenity"="prison"];rel(around:${radius},${center.lat},${center.lng})["power"="plant"];);out tags geom;`;
+  let data=null;
+  for(const endpoint of ['https://overpass-api.de/api/interpreter']) {
+    try {
+      const response=await fetchImpl(endpoint,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8','Accept':'application/json'},body:`data=${encodeURIComponent(query)}`,signal:AbortSignal.timeout(10000)});
+      const length=Number(response.headers?.get?.('content-length')||0);
+      if(!response.ok || length>4_000_000) continue;
+      const candidate=await response.json();
+      if(!Array.isArray(candidate?.elements) || JSON.stringify(candidate).length>4_000_000) continue;
+      data=candidate;
+      if(candidate.elements.length) break;
+    } catch { /* retry on a later bounded room refresh */ }
+  }
   try {
-    response=await fetchImpl('https://overpass-api.de/api/interpreter',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8','Accept':'application/json'},body:`data=${encodeURIComponent(query)}`,signal:AbortSignal.timeout(10000)});
-    const length=Number(response.headers?.get?.('content-length')||0);
-    if(!response.ok || length>4_000_000) return [];
-    const data=await response.json();
-    if(!Array.isArray(data?.elements) || JSON.stringify(data).length>4_000_000) return [];
+    if(!data) return [];
     const blocked=data.elements.filter(e=>e.type==='way' && restricted(e.tags) && e.geometry?.length>=2).map(e=>e.geometry.map(p=>({lat:p.lat, lng:p.lon})));
     for(const relation of data.elements.filter(e=>e.type==='relation' && restricted(e.tags))) blocked.push(...relationRings(relation.members));
     const segments=[];
@@ -81,14 +90,15 @@ export async function findSafeItemLocations(center,radius,fetchImpl=fetch) {
         // OSM ways are split into short segments around intersections, but long
         // straight mapped paths are common too. Keep those and sample only the
         // part that actually falls inside the play circle below.
-        if(length>=8 && length<=500) segments.push({a,b,length,level:way.tags.level??null,layer:way.tags.layer??null});
+        if(length>=8 && length<=500) segments.push({a,b,length,level:way.tags.level??null,layer:way.tags.layer??null,sidewalk:!ACCESSIBLE_HIGHWAYS.has(way.tags.highway)});
       }
     }
     const result=[];
     for(let attempt=0;attempt<segments.length*3 && result.length<5;attempt++) {
       const segment=segments[Math.floor(Math.random()*segments.length)]; if(!segment) break;
       const fraction=.05+Math.random()*.9;
-      const point=destinationPoint(segment.a,segment.length*fraction,bearingDegrees(segment.a,segment.b));
+      let point=destinationPoint(segment.a,segment.length*fraction,bearingDegrees(segment.a,segment.b));
+      if(segment.sidewalk) point=destinationPoint(point,4,bearingDegrees(segment.a,segment.b)+(Math.random()<.5?90:270));
       if(distanceMeters(center,point)>radius-Math.min(20,radius*.2) || blocked.some(p=>nearPolygon(point,p))) continue;
       if(result.some(existing=>distanceMeters(existing.location,point)<Math.min(80,radius*.7))) continue;
       const value={location:point};
